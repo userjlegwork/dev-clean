@@ -18,7 +18,7 @@ struct DevCleanApp: App {
 
 /// Owns the shared models so the menu-bar popover and the standalone window show the same state.
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let monitor = SystemMonitor()
     let storage = StorageModel()
     private var window: NSWindow?
@@ -44,11 +44,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.title = "DevClean"
             window.styleMask = [.titled, .closable, .miniaturizable]
             window.isReleasedWhenClosed = false
+            window.delegate = self
             window.center()
             self.window = window
         }
+        // While the window is open, act like a normal app (Dock icon, ⌘Tab) so it can't get lost behind others.
+        NSApp.setActivationPolicy(.regular)
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory)
     }
 
     private func launchedAsLoginItem() -> Bool {
