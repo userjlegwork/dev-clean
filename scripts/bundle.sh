@@ -20,9 +20,10 @@ bin_dir="$(swift build -c release ${arch_flags[@]+"${arch_flags[@]}"} --show-bin
 
 app="build/DevClean.app"
 rm -rf "$app"
-mkdir -p "$app/Contents/MacOS"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin_dir/DevClean" "$app/Contents/MacOS/DevClean"
 cp Support/Info.plist "$app/Contents/Info.plist"
+cp Support/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
 
 sign_flags=(--force --options runtime --sign "$identity")
 # A secure timestamp is required for notarization but needs a real certificate.
