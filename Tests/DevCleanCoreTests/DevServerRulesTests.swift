@@ -116,7 +116,7 @@ private func server(pid: Int32, root: String, startedDaysAgo days: Double, prote
         process.arguments = ["manage.py", "runserver", "127.0.0.1:18999"]
         process.currentDirectoryURL = project.appendingPathComponent("core")
         try process.run()
-        try await Task.sleep(for: .milliseconds(500))
+        defer { if process.isRunning { process.terminate() } }
 
         let rootPath = DevServerRules.normalize(project.path)
         func find(_ rules: DevServerRules) -> DevServerProject? {
@@ -124,7 +124,13 @@ private func server(pid: Int32, root: String, startedDaysAgo days: Double, prote
                 .first { DevServerRules.normalize($0.root) == rootPath }
         }
 
-        let found = try #require(find(DevServerRules(protectedPaths: [])))
+        // The first python3 launch after a build can be slow (xcrun shim), so poll rather than sleep once.
+        var scanned: DevServerProject?
+        for _ in 0..<50 where scanned == nil {
+            try await Task.sleep(for: .milliseconds(100))
+            scanned = find(DevServerRules(protectedPaths: []))
+        }
+        let found = try #require(scanned)
         #expect(found.servers.map(\.label).contains("Django :18999"))
         #expect(!found.isProtected)
         #expect(find(DevServerRules(protectedPaths: [project.path]))?.isProtected == true)

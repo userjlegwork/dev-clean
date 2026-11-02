@@ -5,22 +5,56 @@ import SwiftUI
 @main
 struct DevCleanApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @State private var monitor = SystemMonitor()
 
     var body: some Scene {
         MenuBarExtra {
-            DashboardView(monitor: monitor)
+            DashboardView(monitor: appDelegate.monitor, storage: appDelegate.storage)
         } label: {
-            MenuBarLabel(monitor: monitor)
+            MenuBarLabel(monitor: appDelegate.monitor)
         }
         .menuBarExtraStyle(.window)
     }
 }
 
+/// Owns the shared models so the menu-bar popover and the standalone window show the same state.
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    let monitor = SystemMonitor()
+    let storage = StorageModel()
+    private var window: NSWindow?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Info.plist sets LSUIElement for the bundled app; this covers `swift run` too.
         NSApp.setActivationPolicy(.accessory)
+        // Opened by hand (Finder, Spotlight, `open`): show a window too, since the menu-bar
+        // icon is easy to miss or can be hidden behind the notch. Stay quiet as a login item.
+        if !launchedAsLoginItem() { showWindow() }
+    }
+
+    /// Opening the app again while it's running brings the window back.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showWindow()
+        return false
+    }
+
+    func showWindow() {
+        if window == nil {
+            let window = NSWindow(contentViewController: NSHostingController(
+                rootView: DashboardView(monitor: monitor, storage: storage)))
+            window.title = "DevClean"
+            window.styleMask = [.titled, .closable, .miniaturizable]
+            window.isReleasedWhenClosed = false
+            window.center()
+            self.window = window
+        }
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate()
+    }
+
+    private func launchedAsLoginItem() -> Bool {
+        guard let event = NSAppleEventManager.shared().currentAppleEvent else { return false }
+        return event.eventID == kAEOpenApplication
+            && event.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue == keyAELaunchedAsLogInItem
     }
 }
 

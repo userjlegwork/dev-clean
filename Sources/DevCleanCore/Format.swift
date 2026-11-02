@@ -8,7 +8,10 @@ public enum Format {
 
     /// Decimal units, like Finder.
     public static func disk(_ bytes: UInt64) -> String {
-        ByteCountFormatter.string(fromByteCount: Int64(clamping: bytes), countStyle: .file)
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        formatter.allowsNonnumericFormatting = false // "0 KB", not "Zero KB"
+        return formatter.string(fromByteCount: Int64(clamping: bytes))
     }
 
     public static func age(since date: Date, now: Date = Date()) -> String {

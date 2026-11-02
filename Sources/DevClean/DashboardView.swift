@@ -5,8 +5,9 @@ import SwiftUI
 
 struct DashboardView: View {
     let monitor: SystemMonitor
+    let storage: StorageModel
 
-    private enum Tab { case overview, devServers }
+    private enum Tab { case overview, devServers, storage }
 
     @State private var tab = Tab.overview
     @State private var showProcesses = false
@@ -19,8 +20,9 @@ struct DashboardView: View {
 
             Picker("", selection: $tab) {
                 Text("Overview").tag(Tab.overview)
-                Text(monitor.staleProjects.isEmpty ? "Dev servers" : "Dev servers (\(monitor.staleProjects.count) stale)")
+                Text(monitor.staleProjects.isEmpty ? "Servers" : "Servers (\(monitor.staleProjects.count))")
                     .tag(Tab.devServers)
+                Text("Storage").tag(Tab.storage)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -32,6 +34,7 @@ struct DashboardView: View {
             switch tab {
             case .overview: overview
             case .devServers: DevServersView(monitor: monitor)
+            case .storage: StorageView(monitor: monitor, storage: storage)
             }
 
             Divider()
@@ -48,7 +51,13 @@ struct DashboardView: View {
                 ForEach(monitor.insights) { insight in
                     InsightRow(insight: insight)
                         .contentShape(Rectangle())
-                        .onTapGesture { if insight.id == "stale-servers" { tab = .devServers } }
+                        .onTapGesture {
+                            switch insight.id {
+                            case "stale-servers": tab = .devServers
+                            case "disk": tab = .storage
+                            default: break
+                            }
+                        }
                 }
             }
         }

@@ -74,6 +74,11 @@ final class SystemMonitor {
         }
     }
 
+    /// Reads free disk space now, without waiting for the next poll.
+    func liveDiskFree() -> UInt64? {
+        (try? SystemMetrics.disk(volume: URL(fileURLWithPath: "/")))?.free
+    }
+
     /// Stops every server in the given projects. Protected projects are skipped even if passed in.
     func stop(_ projects: [DevServerProject]) async {
         let targets = projects.filter { !$0.isProtected && !stopping.contains($0.root) }

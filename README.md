@@ -28,10 +28,22 @@ needs the bundled app.
   re-checking each PID's start time so a reused PID is never hit.
 - `Sources/DevClean`: SwiftUI `MenuBarExtra`, polling every 5 s. Protected
   folders and the stale cutoff are stored in `UserDefaults`.
-
-`DEVCLEAN_LIVE=1 swift test --filter LiveDevServerScan` prints what the
-scanner sees on this machine without stopping anything.
 - `Support/Info.plist`: bundle metadata (`LSUIElement`, so no Dock icon).
+- Cleanup (`CleanupCatalog`, `CleanupRunner`): each target either empties a
+  cache folder, removes old `name-<version>` folders, or runs the tool's own
+  command (`uv cache clean`, `pnpm store prune`, `xcrun simctl …`). Deletes
+  only real folders at least two levels inside home, refuses symlinks, and
+  won't run while a blocking process (Xcode, Simulator, Playwright browsers…)
+  is alive. Caches are deleted outright since they rebuild; nothing here goes
+  to the Trash because that wouldn't free space. Every run is appended to
+  `~/Library/Logs/DevClean/cleanup.log` (JSON lines).
+
+Read-only checks against this machine (they stop and delete nothing):
+
+```bash
+DEVCLEAN_LIVE=1 swift test --filter LiveDevServerScan
+DEVCLEAN_LIVE=1 swift test --filter LiveCleanupPreview
+```
 
 ## Roadmap
 
@@ -40,7 +52,7 @@ scanner sees on this machine without stopping anything.
 | M0 | Menu-bar scaffold, bundling, launch at login | done |
 | M1 | Read-only dashboard: RAM, swap, disk, uptime, top apps/processes, insights | done |
 | M2 | Dev-server finder (runserver, vite, esbuild, celery, postgres) with protected folders; stop gracefully | done |
-| M3 | Storage scanner + cache cleanup (uv, npm, pnpm, Playwright, DerivedData, simulators) with dry run, Trash, log | |
+| M3 | Storage tab: cache cleanup (uv, npm, pnpm, Bun, pip, Homebrew, DerivedData, simulators, old Playwright browsers) with preview, blockers, log | done |
 | M4 | Codex worktree safety checks (dirty/unpushed) and large-file finder | |
 | M5 | Notifications and scheduled safe cleanup | |
 | M6 | Developer ID signing and notarization | |
