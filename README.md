@@ -50,6 +50,13 @@ needs the bundled app.
   to the Trash; anything under `~/Library` or open in a process (`lsof`) can
   only be revealed.
 
+- Automation (`NotificationPolicy`, `AutoCleanPolicy`): warnings and critical
+  insights become notifications (a warning at most once a day, a critical one
+  every 6 hours, a worse one right away). Opt-in automatic cleanup, when free
+  space is low or weekly and at most daily, runs only caches that rebuild
+  themselves (uv, npm, pnpm unused, Bun, pip, Homebrew), skipping anything in
+  use; uv also waits until no `uv` process runs. Settings live in the gear tab.
+
 Read-only checks against this machine (they stop and delete nothing):
 
 ```bash
@@ -67,7 +74,7 @@ DEVCLEAN_LIVE=1 swift test --filter LiveWorktreePreview
 | M2 | Dev-server finder (runserver, vite, esbuild, celery, postgres) with protected folders; stop gracefully | done |
 | M3 | Storage tab: cache cleanup (uv, npm, pnpm, Bun, pip, Homebrew, DerivedData, simulators, old Playwright browsers) with preview, blockers, log | done |
 | M4 | Worktree cleanup with safety checks (dirty, unpushed, in use, iCloud) and large-file finder | done |
-| M5 | Notifications and scheduled safe cleanup | |
+| M5 | Notifications and scheduled safe cleanup | done |
 | M6 | Developer ID signing and notarization | |
 
 Space freed should be reported from free-space before/after, not file sizes:

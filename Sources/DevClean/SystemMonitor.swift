@@ -40,6 +40,9 @@ final class SystemMonitor {
 
     private var pollTask: Task<Void, Never>?
 
+    /// Called after every successful poll (notifications and automatic cleanup hang off this).
+    var onRefresh: (@MainActor () -> Void)?
+
     init(interval: Duration = .seconds(5)) {
         let defaults = UserDefaults.standard
         protectedPaths = defaults.stringArray(forKey: Keys.protectedPaths) ?? DevServerRules.defaultProtectedPaths
@@ -69,6 +72,7 @@ final class SystemMonitor {
             self.system = system
             insights = Insights.evaluate(system: system, processes: samples, staleProjects: staleProjects)
             lastError = nil
+            onRefresh?()
         case .failure(let error):
             lastError = String(describing: error)
         }

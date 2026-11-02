@@ -1,18 +1,16 @@
 import AppKit
 import DevCleanCore
-import ServiceManagement
 import SwiftUI
 
 struct DashboardView: View {
     let monitor: SystemMonitor
     let storage: StorageModel
+    let automation: Automation
 
-    private enum Tab: String { case overview, devServers, storage }
+    private enum Tab: String { case overview, devServers, storage, settings }
 
     @AppStorage("dashboardTab") private var tab = Tab.overview
     @State private var showProcesses = false
-    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
-    @State private var loginItemError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -23,6 +21,7 @@ struct DashboardView: View {
                 Text(monitor.staleProjects.isEmpty ? "Servers" : "Servers (\(monitor.staleProjects.count))")
                     .tag(Tab.devServers)
                 Text("Storage").tag(Tab.storage)
+                Image(systemName: "gearshape").tag(Tab.settings).help("Settings")
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -35,6 +34,7 @@ struct DashboardView: View {
             case .overview: overview
             case .devServers: DevServersView(monitor: monitor)
             case .storage: StorageView(monitor: monitor, storage: storage)
+            case .settings: SettingsView(monitor: monitor, storage: storage, automation: automation)
             }
 
             Divider()
@@ -150,13 +150,6 @@ struct DashboardView: View {
 
     private var footer: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Toggle("Launch at login", isOn: $launchAtLogin)
-                .toggleStyle(.checkbox)
-                .onChange(of: launchAtLogin) { _, enabled in setLaunchAtLogin(enabled) }
-            if let loginItemError {
-                Text(loginItemError).font(.caption).foregroundStyle(.red)
-            }
-
             HStack {
                 Button("Refresh") { Task { await monitor.refresh() } }
                 Button("Activity Monitor") {
@@ -165,20 +158,6 @@ struct DashboardView: View {
                 Spacer()
                 Button("Quit") { NSApp.terminate(nil) }
             }
-        }
-    }
-
-    private func setLaunchAtLogin(_ enabled: Bool) {
-        do {
-            if enabled {
-                try SMAppService.mainApp.register()
-            } else {
-                try SMAppService.mainApp.unregister()
-            }
-            loginItemError = nil
-        } catch {
-            loginItemError = "Needs the bundled app (scripts/bundle.sh): \(error.localizedDescription)"
-            launchAtLogin = SMAppService.mainApp.status == .enabled
         }
     }
 }

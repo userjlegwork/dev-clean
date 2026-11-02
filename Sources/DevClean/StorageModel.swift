@@ -55,9 +55,14 @@ final class StorageModel {
     }
 
     func clean(diskFree: @escaping @MainActor () -> UInt64?) async {
-        guard !isRunning else { return }
-        let chosen = targets.filter { selected.contains($0.id) }
-        guard !chosen.isEmpty else { return }
+        await clean(targets.filter { selected.contains($0.id) }, automatic: false, diskFree: diskFree)
+    }
+
+    /// Runs `chosen` in order and returns the free space gained, or nil if a run was already going.
+    @discardableResult
+    func clean(_ chosen: [CleanupTarget], automatic: Bool,
+               diskFree: @escaping @MainActor () -> UInt64?) async -> (freed: UInt64, failures: Int)? {
+        guard !isRunning, !chosen.isEmpty else { return nil }
 
         results = []
         summary = nil
@@ -77,7 +82,8 @@ final class StorageModel {
                                        message: outcome.error ?? "Done", removedItems: outcome.removedItems,
                                        freedBytes: max(freed, 0))
             results.append(result)
-            log.append(.init(date: Date(), target: target.name, action: plan.actions.joined(separator: "; "),
+            log.append(.init(date: Date(), target: target.name,
+                             action: (automatic ? "Automatic: " : "") + plan.actions.joined(separator: "; "),
                              estimatedBytes: sizes[target.id] ?? 0, result: result))
         }
         runningTarget = nil
@@ -90,8 +96,9 @@ final class StorageModel {
             text += " The rest was shared with installed projects (clones and hard links), so deleting it frees nothing."
         }
         if failures > 0 { text += " \(failures) didn't finish; see below." }
-        summary = text
+        summary = (automatic ? "Automatic cleanup: " : "") + text
 
         await scan()
+        return (UInt64(totalFreed), failures)
     }
 }

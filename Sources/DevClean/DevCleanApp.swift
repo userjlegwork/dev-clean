@@ -1,6 +1,7 @@
 import AppKit
 import DevCleanCore
 import SwiftUI
+import UserNotifications
 
 @main
 struct DevCleanApp: App {
@@ -8,7 +9,7 @@ struct DevCleanApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            DashboardView(monitor: appDelegate.monitor, storage: appDelegate.storage)
+            DashboardView(monitor: appDelegate.monitor, storage: appDelegate.storage, automation: appDelegate.automation)
         } label: {
             MenuBarLabel(monitor: appDelegate.monitor)
         }
@@ -18,14 +19,17 @@ struct DevCleanApp: App {
 
 /// Owns the shared models so the menu-bar popover and the standalone window show the same state.
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNotificationCenterDelegate {
     let monitor = SystemMonitor()
     let storage = StorageModel()
+    let automation = Automation()
     private var window: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Info.plist sets LSUIElement for the bundled app; this covers `swift run` too.
         NSApp.setActivationPolicy(.accessory)
+        if Bundle.main.bundleIdentifier != nil { UNUserNotificationCenter.current().delegate = self }
+        monitor.onRefresh = { [unowned self] in automation.check(monitor: monitor, storage: storage) }
         // Opened by hand (Finder, Spotlight, `open`): show a window too, since the menu-bar
         // icon is easy to miss or can be hidden behind the notch. Stay quiet as a login item.
         if !launchedAsLoginItem() { showWindow() }
@@ -40,7 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func showWindow() {
         if window == nil {
             let window = NSWindow(contentViewController: NSHostingController(
-                rootView: DashboardView(monitor: monitor, storage: storage)))
+                rootView: DashboardView(monitor: monitor, storage: storage, automation: automation)))
             window.title = "DevClean"
             window.styleMask = [.titled, .closable, .miniaturizable]
             window.isReleasedWhenClosed = false
@@ -56,6 +60,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+    }
+
+    /// Clicking a notification opens the window on the tab it's about.
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+        let tab = response.notification.request.content.userInfo["tab"] as? String
+        await MainActor.run {
+            if let tab { UserDefaults.standard.set(tab, forKey: "dashboardTab") }
+            showWindow()
+        }
+    }
+
+    /// Show banners even while DevClean is frontmost.
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                            willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+        [.banner, .sound]
     }
 
     private func launchedAsLoginItem() -> Bool {
