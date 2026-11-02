@@ -65,6 +65,36 @@ DEVCLEAN_LIVE=1 swift test --filter LiveCleanupPreview
 DEVCLEAN_LIVE=1 swift test --filter LiveWorktreePreview
 ```
 
+## Releasing
+
+`scripts/release.sh` builds a universal (Apple silicon + Intel) app, signs it
+with Developer ID and the hardened runtime, notarizes and staples it, and
+packages `build/DevClean-<version>.dmg` that opens on any Mac without
+Gatekeeper warnings. Bump `CFBundleShortVersionString` and `CFBundleVersion`
+in `Support/Info.plist` first.
+
+One-time setup (needs the paid Apple Developer Program):
+
+1. developer.apple.com → Certificates → **+** → *Developer ID Application*;
+   download it and double-click to add it to the login keychain.
+2. Create an app-specific password at account.apple.com, then store the
+   notary credentials in the keychain (prompts for that password):
+
+   ```bash
+   xcrun notarytool store-credentials devclean --apple-id <apple id> --team-id <team id>
+   ```
+
+Then:
+
+```bash
+scripts/release.sh --check          # is the certificate and profile set up?
+scripts/release.sh --skip-notarize  # sign and package only (ad-hoc without a certificate)
+scripts/release.sh                  # full release
+```
+
+Local builds (`bundle.sh`) also use the hardened runtime, so anything it
+would break shows up before a release.
+
 ## Roadmap
 
 | # | Scope | Status |
@@ -75,7 +105,7 @@ DEVCLEAN_LIVE=1 swift test --filter LiveWorktreePreview
 | M3 | Storage tab: cache cleanup (uv, npm, pnpm, Bun, pip, Homebrew, DerivedData, simulators, old Playwright browsers) with preview, blockers, log | done |
 | M4 | Worktree cleanup with safety checks (dirty, unpushed, in use, iCloud) and large-file finder | done |
 | M5 | Notifications and scheduled safe cleanup | done |
-| M6 | Developer ID signing and notarization | |
+| M6 | Developer ID signing and notarization | scripted; first signed release needs a Developer ID |
 
 Space freed should be reported from free-space before/after, not file sizes:
 APFS clones mean deleting a cache can free much less than its size (clearing
