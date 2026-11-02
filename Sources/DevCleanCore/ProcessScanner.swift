@@ -103,9 +103,60 @@ public enum ProcessScanner {
     }
 
     static func startTime(pid: Int32) -> Date? {
+        bsdInfo(pid: pid).map(startTime(of:))
+    }
+
+    /// True while `pid` is running and is still the process that started at `startedAt`
+    /// (guards against PID reuse). Zombies count as exited.
+    public static func isRunning(pid: Int32, startedAt: Date?) -> Bool {
+        guard let info = bsdInfo(pid: pid) else { return false }
+        if info.pbi_status == 5 { return false } // SZOMB
+        if let startedAt, abs(startTime(of: info).timeIntervalSince(startedAt)) > 1 { return false }
+        return true
+    }
+
+    /// Full argv, read via KERN_PROCARGS2. Only works for this user's processes.
+    public static func arguments(pid: Int32) -> [String]? {
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var size = 0
+        guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 0 else { return nil }
+        var buffer = [UInt8](repeating: 0, count: size)
+        guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0, size > MemoryLayout<Int32>.size else { return nil }
+
+        // Layout: argc, exec path, NUL padding, then argc NUL-terminated strings.
+        let argc = buffer.withUnsafeBytes { $0.load(as: Int32.self) }
+        var index = MemoryLayout<Int32>.size
+        while index < size, buffer[index] != 0 { index += 1 }
+        while index < size, buffer[index] == 0 { index += 1 }
+
+        var arguments: [String] = []
+        while arguments.count < argc, index < size {
+            let start = index
+            while index < size, buffer[index] != 0 { index += 1 }
+            arguments.append(String(decoding: buffer[start..<index], as: UTF8.self))
+            index += 1
+        }
+        return arguments
+    }
+
+    public static func workingDirectory(pid: Int32) -> String? {
+        var info = proc_vnodepathinfo()
+        let size = Int32(MemoryLayout<proc_vnodepathinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &info, size) == size else { return nil }
+        return withUnsafeBytes(of: info.pvi_cdir.vip_path) { raw in
+            let bytes = raw.prefix { $0 != 0 }
+            return bytes.isEmpty ? nil : String(decoding: bytes, as: UTF8.self)
+        }
+    }
+
+    static func bsdInfo(pid: Int32) -> proc_bsdinfo? {
         var info = proc_bsdinfo()
         let size = Int32(MemoryLayout<proc_bsdinfo>.size)
         guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
-        return Date(timeIntervalSince1970: TimeInterval(info.pbi_start_tvsec) + TimeInterval(info.pbi_start_tvusec) / 1_000_000)
+        return info
+    }
+
+    static func startTime(of info: proc_bsdinfo) -> Date {
+        Date(timeIntervalSince1970: TimeInterval(info.pbi_start_tvsec) + TimeInterval(info.pbi_start_tvusec) / 1_000_000)
     }
 }

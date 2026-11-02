@@ -6,6 +6,9 @@ import SwiftUI
 struct DashboardView: View {
     let monitor: SystemMonitor
 
+    private enum Tab { case overview, devServers }
+
+    @State private var tab = Tab.overview
     @State private var showProcesses = false
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var loginItemError: String?
@@ -14,29 +17,50 @@ struct DashboardView: View {
         VStack(alignment: .leading, spacing: 14) {
             header
 
+            Picker("", selection: $tab) {
+                Text("Overview").tag(Tab.overview)
+                Text(monitor.staleProjects.isEmpty ? "Dev servers" : "Dev servers (\(monitor.staleProjects.count) stale)")
+                    .tag(Tab.devServers)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
             if let error = monitor.lastError {
                 Label(error, systemImage: "xmark.octagon").foregroundStyle(.red).font(.callout)
             }
 
-            if !monitor.insights.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(monitor.insights) { InsightRow(insight: $0) }
-                }
+            switch tab {
+            case .overview: overview
+            case .devServers: DevServersView(monitor: monitor)
             }
 
-            if let system = monitor.system {
-                gauges(system)
-            } else {
-                ProgressView().frame(maxWidth: .infinity)
-            }
-
-            Divider()
-            topConsumers
             Divider()
             footer
         }
         .padding(14)
         .frame(width: 380)
+    }
+
+    @ViewBuilder
+    private var overview: some View {
+        if !monitor.insights.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(monitor.insights) { insight in
+                    InsightRow(insight: insight)
+                        .contentShape(Rectangle())
+                        .onTapGesture { if insight.id == "stale-servers" { tab = .devServers } }
+                }
+            }
+        }
+
+        if let system = monitor.system {
+            gauges(system)
+        } else {
+            ProgressView().frame(maxWidth: .infinity)
+        }
+
+        Divider()
+        topConsumers
     }
 
     private var header: some View {

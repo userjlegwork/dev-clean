@@ -22,7 +22,15 @@ needs the bundled app.
   `host_statistics64`, swap, disk, boot time), `ProcessScanner` (per-process
   footprint via `proc_pid_rusage`, grouped by app bundle), `Insights` (rules
   that turn a snapshot into warnings).
-- `Sources/DevClean`: SwiftUI `MenuBarExtra`, polling every 5 s.
+  `DevServerScanner` reads argv and cwd for likely processes, classifies dev
+  servers and groups them by git checkout (or Postgres data dir);
+  `ProcessStopper` sends SIGTERM (SIGINT for Postgres), waits, then SIGKILLs,
+  re-checking each PID's start time so a reused PID is never hit.
+- `Sources/DevClean`: SwiftUI `MenuBarExtra`, polling every 5 s. Protected
+  folders and the stale cutoff are stored in `UserDefaults`.
+
+`DEVCLEAN_LIVE=1 swift test --filter LiveDevServerScan` prints what the
+scanner sees on this machine without stopping anything.
 - `Support/Info.plist`: bundle metadata (`LSUIElement`, so no Dock icon).
 
 ## Roadmap
@@ -31,7 +39,7 @@ needs the bundled app.
 |---|---|---|
 | M0 | Menu-bar scaffold, bundling, launch at login | done |
 | M1 | Read-only dashboard: RAM, swap, disk, uptime, top apps/processes, insights | done |
-| M2 | Dev-server finder (runserver, vite, esbuild, celery, tmp postgres) with protected paths; stop gracefully | |
+| M2 | Dev-server finder (runserver, vite, esbuild, celery, postgres) with protected folders; stop gracefully | done |
 | M3 | Storage scanner + cache cleanup (uv, npm, pnpm, Playwright, DerivedData, simulators) with dry run, Trash, log | |
 | M4 | Codex worktree safety checks (dirty/unpushed) and large-file finder | |
 | M5 | Notifications and scheduled safe cleanup | |
