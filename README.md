@@ -1,0 +1,42 @@
+# DevClean
+
+A small menu-bar app that keeps an eye on RAM, swap and disk on a dev Mac and
+(eventually) cleans up the things that pile up: stale dev servers, caches, old
+worktrees.
+
+## Build and run
+
+```bash
+swift test                     # core logic tests
+./scripts/bundle.sh            # build/DevClean.app (ad-hoc signed)
+./scripts/bundle.sh --install  # also copy to ~/Applications
+open build/DevClean.app
+```
+
+`swift run DevClean` also works for quick iteration, but "Launch at login"
+needs the bundled app.
+
+## Layout
+
+- `Sources/DevCleanCore`: system reading, no UI. `SystemMetrics` (memory via
+  `host_statistics64`, swap, disk, boot time), `ProcessScanner` (per-process
+  footprint via `proc_pid_rusage`, grouped by app bundle), `Insights` (rules
+  that turn a snapshot into warnings).
+- `Sources/DevClean`: SwiftUI `MenuBarExtra`, polling every 5 s.
+- `Support/Info.plist`: bundle metadata (`LSUIElement`, so no Dock icon).
+
+## Roadmap
+
+| # | Scope | Status |
+|---|---|---|
+| M0 | Menu-bar scaffold, bundling, launch at login | done |
+| M1 | Read-only dashboard: RAM, swap, disk, uptime, top apps/processes, insights | done |
+| M2 | Dev-server finder (runserver, vite, esbuild, celery, tmp postgres) with protected paths; stop gracefully | |
+| M3 | Storage scanner + cache cleanup (uv, npm, pnpm, Playwright, DerivedData, simulators) with dry run, Trash, log | |
+| M4 | Codex worktree safety checks (dirty/unpushed) and large-file finder | |
+| M5 | Notifications and scheduled safe cleanup | |
+| M6 | Developer ID signing and notarization | |
+
+Space freed should be reported from free-space before/after, not file sizes:
+APFS clones mean deleting a cache can free much less than its size (clearing
+34.5 GB of uv cache freed about 10 GB).
