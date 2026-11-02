@@ -26,3 +26,40 @@ struct LiveCleanupPreview {
         }
     }
 }
+
+/// Read-only: lists worktrees with their safety status, and large files. Removes nothing. Run with:
+/// DEVCLEAN_LIVE=1 swift test --filter LiveWorktreePreview
+@Suite(.enabled(if: ProcessInfo.processInfo.environment["DEVCLEAN_LIVE"] != nil))
+struct LiveWorktreePreview {
+    @Test func printWorktrees() async {
+        let clock = ContinuousClock()
+        let start = clock.now
+        let processes = RunningProcess.current()
+        var removable = 0
+        for repository in Worktrees.repositories(extra: ["~/acubliss"]) {
+            print("Repository \(repository)")
+            for worktree in await Worktrees.list(repository: repository) {
+                let status = await Worktrees.status(worktree, processes: processes)
+                let blockers = status.blockers(for: worktree, protectedPaths: DevServerRules.defaultProtectedPaths)
+                if blockers.isEmpty { removable += 1 }
+                let age = status.lastActivity.map { Format.age(since: $0) } ?? "?"
+                print("  \(worktree.displayName()) \(age) \(worktree.isPrunable ? "[prunable]" : "") \(blockers.isEmpty ? "removable" : blockers.joined(separator: "; "))")
+            }
+        }
+        print("Removable: \(removable), status took \(clock.now - start)")
+
+        let sizeStart = clock.now
+        let size = DirectorySizer.allocatedSize(of: NSHomeDirectory() + "/.codex/worktrees/02d8/acubliss")
+        print("One worktree sized \(Format.disk(size)) in \(clock.now - sizeStart)")
+    }
+
+    @Test func printLargeFiles() async {
+        let clock = ContinuousClock()
+        let start = clock.now
+        let files = await LargeFileFinder.find()
+        for file in files {
+            print("  \(Format.disk(file.size)) \(LargeFileFinder.canTrash(file.path) ? "trash" : "reveal") \((file.path as NSString).abbreviatingWithTildeInPath)")
+        }
+        print("\(files.count) files in \(clock.now - start)")
+    }
+}

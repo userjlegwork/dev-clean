@@ -30,7 +30,7 @@ struct DevServersView: View {
                         }
                     }
                 }
-                .frame(maxHeight: 320)
+                .frame(minHeight: 200, maxHeight: 320)
             }
 
             if let summary = monitor.lastStopSummary {

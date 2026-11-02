@@ -37,12 +37,25 @@ needs the bundled app.
   is alive. Caches are deleted outright since they rebuild; nothing here goes
   to the Trash because that wouldn't free space. Every run is appended to
   `~/Library/Logs/DevClean/cleanup.log` (JSON lines).
+- Worktrees (`Worktrees`): finds the repositories behind Codex worktrees (plus
+  any added by hand) and lists their linked worktrees. One is removable only
+  if it has no uncommitted or untracked changes, no commits missing from every
+  remote, no process running inside it, and isn't locked or protected.
+  Removal is plain `git worktree remove` (no `--force`), so git refuses too if
+  anything changed since the check. Worktrees whose files iCloud has offloaded
+  are left alone: `git status` would download every file. Last activity comes
+  from the reflog entries, not file dates (`git gc` rewrites those).
+- Large files (`LargeFileFinder`): Spotlight for home plus a walk of
+  dot-folders (which Spotlight skips), ignoring phone/iCloud mounts. Files go
+  to the Trash; anything under `~/Library` or open in a process (`lsof`) can
+  only be revealed.
 
 Read-only checks against this machine (they stop and delete nothing):
 
 ```bash
 DEVCLEAN_LIVE=1 swift test --filter LiveDevServerScan
 DEVCLEAN_LIVE=1 swift test --filter LiveCleanupPreview
+DEVCLEAN_LIVE=1 swift test --filter LiveWorktreePreview
 ```
 
 ## Roadmap
@@ -53,7 +66,7 @@ DEVCLEAN_LIVE=1 swift test --filter LiveCleanupPreview
 | M1 | Read-only dashboard: RAM, swap, disk, uptime, top apps/processes, insights | done |
 | M2 | Dev-server finder (runserver, vite, esbuild, celery, postgres) with protected folders; stop gracefully | done |
 | M3 | Storage tab: cache cleanup (uv, npm, pnpm, Bun, pip, Homebrew, DerivedData, simulators, old Playwright browsers) with preview, blockers, log | done |
-| M4 | Codex worktree safety checks (dirty/unpushed) and large-file finder | |
+| M4 | Worktree cleanup with safety checks (dirty, unpushed, in use, iCloud) and large-file finder | done |
 | M5 | Notifications and scheduled safe cleanup | |
 | M6 | Developer ID signing and notarization | |
 

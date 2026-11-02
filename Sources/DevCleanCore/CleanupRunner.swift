@@ -32,12 +32,14 @@ public enum CleanupError: Error, CustomStringConvertible, Equatable {
     case unsafePath(String)
     case missingExecutable(String)
     case blocked([String])
+    case inUse(String)
 
     public var description: String {
         switch self {
         case .unsafePath(let path): "Refusing to delete inside \(path)"
         case .missingExecutable(let name): "\(name) isn't installed"
         case .blocked(let names): "Quit \(names.joined(separator: ", ")) first"
+        case .inUse(let path): "\((path as NSString).lastPathComponent) is open in an app"
         }
     }
 }

@@ -4,6 +4,34 @@ import SwiftUI
 
 struct StorageView: View {
     let monitor: SystemMonitor
+    let storage: StorageModel
+
+    private enum Section: String { case caches, worktrees, largeFiles }
+
+    @AppStorage("storageSection") private var section = Section.caches
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Picker("", selection: $section) {
+                Text("Caches").tag(Section.caches)
+                Text("Worktrees").tag(Section.worktrees)
+                Text("Large files").tag(Section.largeFiles)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .controlSize(.small)
+
+            switch section {
+            case .caches: CachesView(monitor: monitor, storage: storage)
+            case .worktrees: WorktreesView(monitor: monitor, model: storage.worktrees)
+            case .largeFiles: LargeFilesView(model: storage.largeFiles)
+            }
+        }
+    }
+}
+
+private struct CachesView: View {
+    let monitor: SystemMonitor
     @Bindable var storage: StorageModel
 
     @State private var showPreview = false
@@ -32,7 +60,7 @@ struct StorageView: View {
                     }
                 }
             }
-            .frame(maxHeight: 340)
+            .frame(minHeight: 260, maxHeight: 340)
 
             if let summary = storage.summary {
                 Text(summary).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

@@ -7,9 +7,9 @@ struct DashboardView: View {
     let monitor: SystemMonitor
     let storage: StorageModel
 
-    private enum Tab { case overview, devServers, storage }
+    private enum Tab: String { case overview, devServers, storage }
 
-    @State private var tab = Tab.overview
+    @AppStorage("dashboardTab") private var tab = Tab.overview
     @State private var showProcesses = false
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var loginItemError: String?
