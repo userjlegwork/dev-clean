@@ -7,9 +7,12 @@ struct WorktreeRow: Identifiable {
     var status: WorktreeStatus?
     var size: UInt64?
     var blockers: [String]
+    var isProtected = false
 
     var id: String { worktree.id }
     var isRemovable: Bool { status != nil && blockers.isEmpty }
+    /// Blocked, but the user can stop what's inside or force it out.
+    var canForce: Bool { status != nil && !blockers.isEmpty && !isProtected && !worktree.isPrunable }
 }
 
 /// Lists linked git worktrees, checks each one is safe to remove, and removes the selected ones.
@@ -22,6 +25,7 @@ final class WorktreeModel {
     var selected: Set<String> = []
 
     private(set) var removing: String?
+    private(set) var stopping: String?
     private(set) var errors: [String: String] = [:]
     private(set) var summary: String?
 
@@ -57,9 +61,7 @@ final class WorktreeModel {
         await forEach(worktrees, width: 6) { worktree in
             (worktree.id, await Worktrees.status(worktree, processes: processes))
         } update: { id, status in
-            guard let index = self.rows.firstIndex(where: { $0.id == id }) else { return }
-            self.rows[index].status = status
-            self.rows[index].blockers = status.blockers(for: self.rows[index].worktree, protectedPaths: protectedPaths)
+            self.apply(status, to: id, protectedPaths: protectedPaths)
         }
 
         // Pre-select what's removable and untouched for a while; leave recent work for the user to tick.
@@ -112,6 +114,66 @@ final class WorktreeModel {
         let kept = errors
         await scan(protectedPaths: protectedPaths, staleAfter: staleAfter)
         errors = kept
+    }
+
+    // MARK: - Stop and force
+
+    /// Stops the processes inside one worktree, then re-checks it.
+    func stopProcesses(in row: WorktreeRow, protectedPaths: [String]) async {
+        guard stopping == nil, !isRemoving else { return }
+        stopping = row.id
+        defer { stopping = nil }
+        errors[row.id] = nil
+
+        let names = row.status?.processNames.joined(separator: ", ") ?? "processes"
+        guard let report = await Worktrees.stopProcesses(in: row.worktree, protectedPaths: protectedPaths) else {
+            errors[row.id] = "In a protected folder"
+            return
+        }
+        if !report.failed.isEmpty { errors[row.id] = "\(report.failed.count) wouldn't stop (owned by another user?)" }
+        summary = "\(report.summary) in \(row.worktree.displayName()) (\(names))."
+        log.append(.init(date: Date(), target: "Worktree \(row.worktree.displayName())", action: "Stop \(names)",
+                         estimatedBytes: 0,
+                         result: CleanupResult(targetID: "worktree-stop", succeeded: report.failed.isEmpty,
+                                               message: report.summary, removedItems: 0, freedBytes: 0)))
+
+        let worktree = row.worktree
+        let status = await Worktrees.status(worktree, processes: await Task.detached { RunningProcess.current() }.value)
+        apply(status, to: row.id, protectedPaths: protectedPaths)
+    }
+
+    /// Moves a blocked worktree to the Trash and drops it from git (see `Worktrees.forceRemove`).
+    func forceRemove(_ row: WorktreeRow, protectedPaths: [String]) async {
+        guard !isRemoving, stopping == nil else { return }
+        removing = row.id
+        defer { removing = nil }
+        errors[row.id] = nil
+
+        let target = "Worktree \(row.worktree.displayName())"
+        let action = "Force remove \(row.worktree.path) (to Trash)"
+        do {
+            let removal = try await Worktrees.forceRemove(row.worktree, protectedPaths: protectedPaths)
+            var text = "Moved \(row.worktree.displayName()) to the Trash. Empty the Trash to get \(Format.disk(row.size ?? 0)) back."
+            if let branch = removal.backupBranch { text += " Its unpushed commits are on branch \(branch)." }
+            summary = text
+            rows.removeAll { $0.id == row.id }
+            selected.remove(row.id)
+            log.append(.init(date: Date(), target: target, action: action, estimatedBytes: row.size ?? 0,
+                             result: CleanupResult(targetID: "worktree-force", succeeded: true, message: text,
+                                                   removedItems: 1, freedBytes: 0)))
+        } catch {
+            errors[row.id] = error.description
+            log.append(.init(date: Date(), target: target, action: action, estimatedBytes: row.size ?? 0,
+                             result: CleanupResult(targetID: "worktree-force", succeeded: false, message: error.description,
+                                                   removedItems: 0, freedBytes: 0)))
+        }
+    }
+
+    private func apply(_ status: WorktreeStatus, to id: String, protectedPaths: [String]) {
+        guard let index = rows.firstIndex(where: { $0.id == id }) else { return }
+        rows[index].status = status
+        rows[index].blockers = status.blockers(for: rows[index].worktree, protectedPaths: protectedPaths)
+        rows[index].isProtected = DevServerRules(protectedPaths: protectedPaths).isProtected([rows[index].worktree.path])
     }
 
     private func sortRows() {

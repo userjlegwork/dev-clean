@@ -33,12 +33,12 @@ public struct WorktreeStatus: Sendable, Equatable {
     /// Last checkout or commit, from the worktree's reflog.
     public var lastActivity: Date?
     /// Processes whose working directory or executable is inside the worktree.
-    public var processes: [String]
+    public var processes: [RunningProcess]
     /// git couldn't read it; treat as unsafe.
     public var error: String?
 
     public init(changedFiles: Int = 0, unpushedCommits: Int = 0, lastActivity: Date? = nil,
-                processes: [String] = [], error: String? = nil) {
+                processes: [RunningProcess] = [], error: String? = nil) {
         self.changedFiles = changedFiles
         self.unpushedCommits = unpushedCommits
         self.lastActivity = lastActivity
@@ -54,8 +54,14 @@ public struct WorktreeStatus: Sendable, Equatable {
         if DevServerRules(protectedPaths: protectedPaths).isProtected([worktree.path]) { reasons.append("In a protected folder") }
         if changedFiles > 0 { reasons.append("\(changedFiles) uncommitted change\(changedFiles == 1 ? "" : "s")") }
         if unpushedCommits > 0 { reasons.append("\(unpushedCommits) commit\(unpushedCommits == 1 ? "" : "s") not on any remote") }
-        if !processes.isEmpty { reasons.append("In use by \(processes.prefix(3).joined(separator: ", "))") }
+        if !processes.isEmpty { reasons.append("In use by \(processNames.prefix(3).joined(separator: ", "))") }
         return reasons
+    }
+
+    /// Distinct names of the processes inside, in order.
+    public var processNames: [String] {
+        var seen = Set<String>()
+        return processes.map(\.name).filter { seen.insert($0).inserted }
     }
 }
 
@@ -182,13 +188,10 @@ public enum Worktrees {
         }
     }
 
-    static func processesInside(_ path: String, _ processes: [RunningProcess]) -> [String] {
+    static func processesInside(_ path: String, _ processes: [RunningProcess]) -> [RunningProcess] {
         let root = DevServerRules(protectedPaths: [path])
-        var seen = Set<String>()
-        return processes
-            .filter { root.isProtected([$0.workingDirectory, $0.executablePath].compactMap { $0 }) }
-            .map(\.name)
-            .filter { seen.insert($0).inserted }
+        let me = getpid()
+        return processes.filter { $0.pid != me && root.isProtected([$0.workingDirectory, $0.executablePath].compactMap { $0 }) }
     }
 
     // MARK: - Removal
@@ -206,6 +209,83 @@ public enum Worktrees {
         return output.status == 0 ? nil : "git refused: \(output.tail)"
     }
 
+    // MARK: - Stopping and forcing
+
+    /// Stops whatever is running inside the worktree: SIGTERM, then SIGKILL after `grace`.
+    /// Looks the processes up again first, so only what's inside right now is signalled.
+    public static func stopProcesses(in worktree: Worktree, protectedPaths: [String],
+                                     grace: Duration = .seconds(5)) async -> StopReport? {
+        guard !DevServerRules(protectedPaths: protectedPaths).isProtected([worktree.path]) else { return nil }
+        let inside = processesInside(worktree.path, RunningProcess.current())
+        return await ProcessStopper.stop(inside.map { StopTarget(pid: $0.pid, startTime: $0.startTime) }, grace: grace)
+    }
+
+    public struct ForceRemoval: Sendable, Equatable {
+        /// Where the folder went, nil if it was already gone.
+        public var trashedTo: URL?
+        /// Branch created to keep unpushed commits of a detached worktree.
+        public var backupBranch: String?
+    }
+
+    public enum ForceError: Error, Equatable, CustomStringConvertible {
+        case protected
+        case inUse([String])
+        case failed(String)
+
+        public var description: String {
+            switch self {
+            case .protected: "In a protected folder"
+            case .inUse(let names): "Still in use by \(names.joined(separator: ", ")); stop it first"
+            case .failed(let message): message
+            }
+        }
+    }
+
+    /// Removes a worktree git won't remove on its own (uncommitted changes, unpushed commits, locked,
+    /// unreadable). Nothing is deleted outright: the folder goes to the Trash with its uncommitted changes,
+    /// and unpushed commits on a detached HEAD are kept on a backup branch. Branches stay in the repository.
+    public static func forceRemove(_ worktree: Worktree, protectedPaths: [String]) async throws(ForceError) -> ForceRemoval {
+        guard !DevServerRules(protectedPaths: protectedPaths).isProtected([worktree.path]) else { throw .protected }
+        let inside = processesInside(worktree.path, RunningProcess.current())
+        guard inside.isEmpty else { throw .inUse(WorktreeStatus(processes: inside).processNames) }
+
+        var result = ForceRemoval()
+        if worktree.branch == nil, let head = worktree.head {
+            result.backupBranch = try await backUpDetached(head: head, worktree: worktree)
+        }
+        if worktree.isLocked {
+            let unlock = await CommandRunner.run(git, ["-C", worktree.repository, "worktree", "unlock", worktree.path],
+                                                 timeout: .seconds(30))
+            guard unlock.status == 0 else { throw .failed("git worktree unlock failed: \(unlock.tail)") }
+        }
+        if FileManager.default.fileExists(atPath: worktree.path) {
+            do {
+                var trashed: NSURL?
+                try FileManager.default.trashItem(at: URL(fileURLWithPath: worktree.path), resultingItemURL: &trashed)
+                result.trashedTo = trashed as URL?
+            } catch {
+                throw .failed("Couldn't move it to the Trash: \(error.localizedDescription)")
+            }
+        }
+        if let error = await prune(repository: worktree.repository) { throw .failed(error) }
+        return result
+    }
+
+    /// Detached commits not on any remote would only be reachable through the worktree's reflog,
+    /// which goes with it. Pins them to "devclean-backup/<short sha>".
+    static func backUpDetached(head: String, worktree: Worktree) async throws(ForceError) -> String? {
+        let count = await CommandRunner.run(git, ["-C", worktree.repository, "rev-list", "--count", head, "--not", "--remotes"],
+                                            timeout: .seconds(30))
+        guard count.status == 0, let unpushed = Int(count.output.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            throw .failed("Couldn't check for unpushed commits: \(count.tail)")
+        }
+        guard unpushed > 0 else { return nil }
+        let name = "devclean-backup/\(head.prefix(7))"
+        let branch = await CommandRunner.run(git, ["-C", worktree.repository, "branch", "-f", name, head], timeout: .seconds(30))
+        guard branch.status == 0 else { throw .failed("Couldn't save unpushed commits to \(name): \(branch.tail)") }
+        return name
+    }
+
     /// Drops bookkeeping for worktrees whose folders are already gone.
     public static func prune(repository: String) async -> String? {
         let output = await CommandRunner.run(git, ["-C", repository, "worktree", "prune"], timeout: .seconds(60))
@@ -214,22 +294,28 @@ public enum Worktrees {
 }
 
 /// A process's name, cwd and executable, for "is anything running in this folder?" checks.
-public struct RunningProcess: Sendable {
+public struct RunningProcess: Sendable, Equatable {
+    public var pid: Int32
     public var name: String
     public var workingDirectory: String?
     public var executablePath: String?
+    /// Lets a later stop skip a reused PID.
+    public var startTime: Date?
 
-    public init(name: String, workingDirectory: String?, executablePath: String?) {
+    public init(pid: Int32 = 0, name: String, workingDirectory: String?, executablePath: String?, startTime: Date? = nil) {
+        self.pid = pid
         self.name = name
         self.workingDirectory = workingDirectory
         self.executablePath = executablePath
+        self.startTime = startTime
     }
 
     public static func current() -> [RunningProcess] {
         ProcessScanner.allPIDs().compactMap { pid in
             guard let name = ProcessScanner.shortName(pid: pid) else { return nil }
-            return RunningProcess(name: name, workingDirectory: ProcessScanner.workingDirectory(pid: pid),
-                                  executablePath: ProcessScanner.executablePath(pid: pid))
+            return RunningProcess(pid: pid, name: name, workingDirectory: ProcessScanner.workingDirectory(pid: pid),
+                                  executablePath: ProcessScanner.executablePath(pid: pid),
+                                  startTime: ProcessScanner.startTime(pid: pid))
         }
     }
 }

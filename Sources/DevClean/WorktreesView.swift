@@ -19,7 +19,16 @@ struct WorktreesView: View {
                     ForEach(model.rows) { row in
                         WorktreeRowView(row: row,
                                         isRemoving: model.removing == row.id,
+                                        isStopping: model.stopping == row.id,
+                                        isBusy: model.isRemoving || model.stopping != nil || model.isScanning,
                                         error: model.errors[row.id],
+                                        onStop: { Task { await model.stopProcesses(in: row, protectedPaths: monitor.protectedPaths) } },
+                                        onForce: {
+                                            Task {
+                                                await model.forceRemove(row, protectedPaths: monitor.protectedPaths)
+                                                await monitor.refresh()
+                                            }
+                                        },
                                         isSelected: Binding(
                                             get: { model.selected.contains(row.id) },
                                             set: { on in
@@ -34,7 +43,7 @@ struct WorktreesView: View {
             if let summary = model.summary {
                 Text(summary).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            Text("Only clean, pushed worktrees with nothing running in them can be removed, via git worktree remove. Ignored files such as node_modules and .env go with them.")
+            Text("Remove: clean, pushed, idle worktrees only (node_modules and .env go too). Force remove: to the Trash, unpushed detached commits kept on a devclean-backup branch.")
                 .font(.caption2).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
 
             actions
@@ -117,8 +126,15 @@ struct WorktreesView: View {
 private struct WorktreeRowView: View {
     let row: WorktreeRow
     let isRemoving: Bool
+    let isStopping: Bool
+    let isBusy: Bool
     let error: String?
+    let onStop: () -> Void
+    let onForce: () -> Void
     @Binding var isSelected: Bool
+
+    private enum Pending { case stop, force }
+    @State private var pending: Pending?
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -152,6 +168,7 @@ private struct WorktreeRowView: View {
                     Label(error, systemImage: "xmark.circle").font(.caption).foregroundStyle(.red)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                if row.canForce { forceActions }
             }
             if !row.worktree.isPrunable {
                 Button {
@@ -163,6 +180,39 @@ private struct WorktreeRowView: View {
         }
         .padding(8)
         .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    private var processes: [RunningProcess] { row.status?.processes ?? [] }
+
+    private var forceActions: some View {
+        HStack(spacing: 6) {
+            if isStopping {
+                ProgressView().controlSize(.mini)
+                Text("Stopping…").font(.caption)
+            } else if !processes.isEmpty {
+                Button(pending == .stop ? "Stop \(processes.count) process\(processes.count == 1 ? "" : "es")?" : "Stop") {
+                    if pending == .stop { pending = nil; onStop() } else { pending = .stop }
+                }
+                .tint(pending == .stop ? .red : nil)
+                .help("Quits " + processes.map { "\($0.name) (\($0.pid))" }.joined(separator: ", ")
+                      + ", force-quitting after 5 seconds. Unsaved work in them is lost.")
+            }
+            Button(pending == .force ? "Move to Trash?" : "Force remove") {
+                if pending == .force { pending = nil; onForce() } else { pending = .force }
+            }
+            .tint(pending == .force ? .red : nil)
+            .disabled(!processes.isEmpty)
+            .help(processes.isEmpty
+                  ? "Unlocks it if needed, moves the folder (with any uncommitted changes) to the Trash and drops it from git. Unpushed commits on a detached HEAD are kept on a devclean-backup branch; branches stay in the repository."
+                  : "Stop what's using it first.")
+            if pending != nil {
+                Button("Cancel") { pending = nil }.buttonStyle(.borderless)
+            }
+        }
+        .controlSize(.small)
+        .font(.caption)
+        .disabled(isBusy)
+        .padding(.top, 2)
     }
 
     private var detail: String {

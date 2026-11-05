@@ -74,7 +74,7 @@ private final class GitSandbox {
 
     @Test func blockersCoverEveryReason() {
         let wt = Worktree(path: "/Users/me/acubliss/wt", repository: "/Users/me/acubliss", isLocked: true, isPrunable: false)
-        let status = WorktreeStatus(changedFiles: 2, unpushedCommits: 1, processes: ["node"])
+        let status = WorktreeStatus(changedFiles: 2, unpushedCommits: 1, processes: [RunningProcess(name: "node", workingDirectory: nil, executablePath: nil)])
         let reasons = status.blockers(for: wt, protectedPaths: ["/Users/me/acubliss"])
         #expect(reasons == ["Locked", "In a protected folder", "2 uncommitted changes", "1 commit not on any remote", "In use by node"])
         let free = Worktree(path: "/tmp/wt", repository: "/r", isLocked: false, isPrunable: false)
@@ -88,7 +88,9 @@ private final class GitSandbox {
             RunningProcess(name: "zsh", workingDirectory: "/tmp/wt", executablePath: "/bin/zsh"),
             RunningProcess(name: "vim", workingDirectory: "/tmp/wt2", executablePath: "/usr/bin/vim"),
         ]
-        #expect(Worktrees.processesInside("/tmp/wt", processes) == ["zsh", "esbuild"])
+        let inside = Worktrees.processesInside("/tmp/wt", processes)
+        #expect(inside.map(\.name) == ["zsh", "esbuild", "zsh"])
+        #expect(WorktreeStatus(processes: inside).processNames == ["zsh", "esbuild"])
     }
 
     @Test func cleanPushedWorktreeIsRemovable() async throws {
@@ -124,6 +126,60 @@ private final class GitSandbox {
 
         try box.sh("cd wt && git push -q origin HEAD:refs/heads/pushed")
         #expect(await Worktrees.status(wt, processes: []).unpushedCommits == 0)
+    }
+
+    @Test func stopsWhatRunsInside() async throws {
+        let box = try GitSandbox()
+        let wt = try await box.listed()
+        let sleeper = Process()
+        sleeper.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        sleeper.arguments = ["60"]
+        sleeper.currentDirectoryURL = URL(fileURLWithPath: box.worktree)
+        try sleeper.run()
+        defer { if sleeper.isRunning { sleeper.terminate() } }
+
+        let status = await Worktrees.status(wt, processes: RunningProcess.current())
+        #expect(status.processNames == ["sleep"])
+        await #expect(throws: Worktrees.ForceError.inUse(["sleep"])) {
+            try await Worktrees.forceRemove(wt, protectedPaths: [])
+        }
+        #expect(await Worktrees.stopProcesses(in: wt, protectedPaths: [box.repo, box.worktree]) == nil)
+
+        let report = try #require(await Worktrees.stopProcesses(in: wt, protectedPaths: []))
+        #expect(report.stopped == [sleeper.processIdentifier] && report.failed.isEmpty)
+        #expect(await Worktrees.status(wt, processes: RunningProcess.current()).processes.isEmpty)
+    }
+
+    @Test func forceRemoveTrashesAndKeepsUnpushedCommits() async throws {
+        let box = try GitSandbox()
+        try box.sh("cd wt && echo local > local.txt && git add local.txt && git -c user.email=t@t -c user.name=t commit -qm local")
+        try box.sh("cd wt && echo dirty > dirty.txt && cd ../repo && git worktree lock ../wt")
+        let wt = try await box.listed()
+        #expect(wt.isLocked && wt.branch == nil)
+
+        await #expect(throws: Worktrees.ForceError.protected) {
+            try await Worktrees.forceRemove(wt, protectedPaths: [box.worktree])
+        }
+
+        let removal = try await Worktrees.forceRemove(wt, protectedPaths: [])
+        let trashed = try #require(removal.trashedTo)
+        defer { try? FileManager.default.removeItem(at: trashed) }
+        #expect(FileManager.default.fileExists(atPath: trashed.path + "/dirty.txt"))
+        #expect(!FileManager.default.fileExists(atPath: box.worktree))
+        #expect(await Worktrees.list(repository: box.repo).isEmpty)
+
+        let branch = try #require(removal.backupBranch)
+        #expect(branch.hasPrefix("devclean-backup/"))
+        try box.sh("cd repo && git rev-parse --verify -q \(branch) && git cat-file -e \(branch):local.txt")
+    }
+
+    @Test func forceRemoveOfPushedDetachedWorktreeMakesNoBranch() async throws {
+        let box = try GitSandbox()
+        let wt = try await box.listed()
+        let removal = try await Worktrees.forceRemove(wt, protectedPaths: [])
+        if let trashed = removal.trashedTo { try? FileManager.default.removeItem(at: trashed) }
+        #expect(removal.backupBranch == nil)
+        #expect(await Worktrees.list(repository: box.repo).isEmpty)
     }
 
     @Test func missingFolderIsPruned() async throws {
