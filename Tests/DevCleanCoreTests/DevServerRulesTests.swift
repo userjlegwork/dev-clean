@@ -10,7 +10,8 @@ private func server(pid: Int32, root: String, startedDaysAgo days: Double, prote
     DevServer(
         process: ProcessSample(pid: pid, name: "python", executablePath: nil, footprint: 100,
                                startTime: now.addingTimeInterval(-days * 86_400)),
-        kind: .django, arguments: [], workingDirectory: root, port: nil, projectRoot: root, isProtected: protected)
+        kind: .django, arguments: [], workingDirectory: root, port: nil, projectRoot: root, isProtected: protected,
+        instanceID: pid)
 }
 
 @Suite struct ProtectionTests {

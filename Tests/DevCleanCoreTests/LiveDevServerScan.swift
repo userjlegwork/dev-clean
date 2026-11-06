@@ -12,8 +12,13 @@ struct LiveDevServerScan {
             let flag = project.isProtected ? "PROTECTED" : project.isStale(after: rules.staleAfter) ? "STALE" : "recent"
             let age = project.newestStart.map { Format.age(since: $0) } ?? "?"
             print("[\(flag)] \(project.displayName()) · newest \(age) · \(Format.memory(project.footprint))")
-            for server in project.servers {
-                print("    \(server.process.pid) \(server.label)")
+            let duplicates = project.duplicateInstanceIDs
+            for instance in project.instances {
+                let tags = [duplicates.contains(instance.id) ? "duplicate" : nil, instance.isDetached ? "detached" : nil]
+                    .compactMap { $0 }.joined(separator: ", ")
+                print("  \(instance.label) [\(tags)] started \(instance.startTime.map { Format.age(since: $0) } ?? "?") ago")
+                for process in instance.launchers { print("    \(process.pid) \(process.name) (launcher)") }
+                for server in instance.servers { print("    \(server.process.pid) \(server.label)") }
             }
         }
     }

@@ -20,6 +20,8 @@ public struct DevServer: Sendable, Identifiable, Equatable {
     public var port: Int?
     public var projectRoot: String
     public var isProtected: Bool
+    /// PID at the top of the process tree this server belongs to (see `DevServerInstance`).
+    public var instanceID: Int32
 
     public var id: Int32 { process.pid }
 
@@ -29,15 +31,74 @@ public struct DevServer: Sendable, Identifiable, Equatable {
     }
 }
 
+/// One launch of a server: the process you started plus everything it spawned. `uv run manage.py runserver`
+/// is uv, Django's autoreloader and the serving child; a Celery worker is watchmedo, the main worker and its pool.
+public struct DevServerInstance: Sendable, Identifiable, Equatable {
+    public var id: Int32
+    public var servers: [DevServer]
+    /// Wrappers in the tree that aren't servers themselves (npm, pnpm), topmost first.
+    /// Stopped first so they can't restart anything.
+    public var launchers: [ProcessSample]
+
+    public var primary: DevServer { servers.first { $0.kind != .esbuild } ?? servers[0] }
+    public var kind: DevServerKind { primary.kind }
+    public var port: Int? { servers.lazy.compactMap(\.port).first }
+    public var label: String { port.map { "\(kind.rawValue) :\($0)" } ?? kind.rawValue }
+    public var processCount: Int { servers.count + launchers.count }
+    public var footprint: UInt64 { (servers.map(\.process) + launchers).reduce(0) { $0 + $1.footprint } }
+    public var isProtected: Bool { servers.contains(where: \.isProtected) }
+    /// When it was launched.
+    public var startTime: Date? { (servers.map(\.process) + launchers).compactMap(\.startTime).min() }
+    /// Last (re)start of any of its processes; Django's serving child restarts on every reload.
+    public var newestStart: Date? { servers.compactMap(\.process.startTime).max() }
+    /// The terminal or tool that started it is gone, so nothing will stop it on its own.
+    public var isDetached: Bool {
+        kind != .postgres && (launchers + servers.map(\.process)).first { $0.pid == id }?.parentPID == 1
+    }
+
+    public var stopTargets: [StopTarget] {
+        launchers.map { StopTarget(pid: $0.pid, startTime: $0.startTime) } + servers.map(\.stopTarget)
+    }
+
+    public func isStale(after age: TimeInterval, now: Date = Date()) -> Bool {
+        guard !isProtected, let newestStart else { return false }
+        return now.timeIntervalSince(newestStart) >= age
+    }
+}
+
 /// All dev servers sharing a project folder (a git checkout or a Postgres data dir).
 public struct DevServerProject: Sendable, Identifiable, Equatable {
     public var root: String
     public var servers: [DevServer]
+    /// Launchers by instance ID.
+    public var launchers: [Int32: [ProcessSample]]
+
+    public init(root: String, servers: [DevServer], launchers: [Int32: [ProcessSample]] = [:]) {
+        self.root = root
+        self.servers = servers
+        self.launchers = launchers
+    }
 
     public var id: String { root }
+
+    /// Oldest launch first.
+    public var instances: [DevServerInstance] {
+        Dictionary(grouping: servers, by: \.instanceID)
+            .map { DevServerInstance(id: $0.key, servers: $0.value, launchers: launchers[$0.key] ?? []) }
+            .sorted { ($0.startTime ?? .distantFuture, $0.id) < ($1.startTime ?? .distantFuture, $1.id) }
+    }
+    public var stopTargets: [StopTarget] { instances.flatMap(\.stopTargets) }
+
+    /// Older launches of a kind that also has a newer one running here, e.g. a Vite left behind by a closed
+    /// terminal. These can be stopped even in a protected project: the newest of each kind keeps running.
+    public var duplicateInstanceIDs: Set<Int32> {
+        Set(Dictionary(grouping: instances, by: \.kind).values.flatMap { $0.dropLast() }.map(\.id))
+    }
     /// One protected process protects the whole project.
     public var isProtected: Bool { servers.contains(where: \.isProtected) }
-    public var footprint: UInt64 { servers.reduce(0) { $0 + $1.process.footprint } }
+    public var footprint: UInt64 {
+        servers.reduce(0) { $0 + $1.process.footprint } + launchers.values.joined().reduce(0) { $0 + $1.footprint }
+    }
     public var newestStart: Date? { servers.compactMap(\.process.startTime).max() }
     public var oldestStart: Date? { servers.compactMap(\.process.startTime).min() }
 
@@ -112,12 +173,63 @@ public enum DevServerScanner {
             let paths = [cwd, root].compactMap { $0 } + arguments.filter { $0.hasPrefix("/") }
             return DevServer(process: sample, kind: kind, arguments: arguments, workingDirectory: cwd,
                              port: port(kind: kind, arguments: arguments), projectRoot: root,
-                             isProtected: rules.isProtected(paths))
+                             isProtected: rules.isProtected(paths), instanceID: sample.pid)
         }
 
+        let trees = instanceTrees(servers: servers, samples: samples) { ProcessScanner.arguments(pid: $0.pid) }
         return Dictionary(grouping: servers, by: \.projectRoot)
-            .map { DevServerProject(root: $0.key, servers: $0.value.sorted { $0.process.pid < $1.process.pid }) }
+            .map { root, servers in
+                let servers = servers.map { server in
+                    var server = server
+                    server.instanceID = trees.root[server.id] ?? server.id
+                    return server
+                }
+                let ids = Set(servers.map(\.instanceID))
+                return DevServerProject(root: root, servers: servers.sorted { $0.process.pid < $1.process.pid },
+                                        launchers: trees.launchers.filter { ids.contains($0.key) })
+            }
             .sorted { ($0.newestStart ?? .distantFuture) < ($1.newestStart ?? .distantFuture) }
+    }
+
+    /// Climbs from each server through parent servers and launchers to the top of its tree.
+    /// Returns each server's root PID, and the launchers found above each root.
+    static func instanceTrees(servers: [DevServer], samples: [ProcessSample],
+                              arguments: (ProcessSample) -> [String]?) -> (root: [Int32: Int32], launchers: [Int32: [ProcessSample]]) {
+        let byPID = Dictionary(samples.map { ($0.pid, $0) }, uniquingKeysWith: { first, _ in first })
+        let serverPIDs = Set(servers.map(\.id))
+        var launcherCache: [Int32: Bool] = [:]
+        func isLauncher(_ sample: ProcessSample) -> Bool {
+            if let known = launcherCache[sample.pid] { return known }
+            let found = Self.isLauncher(name: sample.name, arguments: arguments(sample) ?? [])
+            launcherCache[sample.pid] = found
+            return found
+        }
+
+        var roots: [Int32: Int32] = [:]
+        var launchers: [Int32: [ProcessSample]] = [:]
+        for server in servers {
+            var top = server.id
+            var above: [ProcessSample] = []
+            var seen: Set<Int32> = [top]
+            while let parentPID = byPID[top]?.parentPID, parentPID > 1, seen.insert(parentPID).inserted,
+                  let parent = byPID[parentPID] {
+                if !serverPIDs.contains(parentPID) {
+                    guard isLauncher(parent) else { break }
+                    above.append(parent)
+                }
+                top = parentPID
+            }
+            roots[server.id] = top
+            if !above.isEmpty { launchers[top] = above.reversed() }
+        }
+        return (roots, launchers)
+    }
+
+    /// Wrappers that only exist to run a server: killing the server alone would leave them (or restart it).
+    static func isLauncher(name: String, arguments: [String]) -> Bool {
+        let name = name.lowercased()
+        if ["uv", "npm", "npx", "pnpm", "yarn", "bun", "honcho"].contains(name) { return true }
+        return arguments.prefix(3).contains { $0 == "watchmedo" || $0.hasSuffix("/watchmedo") }
     }
 
     public static func classify(executableName: String, arguments: [String]) -> DevServerKind? {

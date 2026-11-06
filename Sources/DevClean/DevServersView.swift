@@ -22,7 +22,8 @@ struct DevServersView: View {
                 ScrollView {
                     VStack(spacing: 8) {
                         ForEach(sorted(monitor.projects, stale: stale)) { project in
-                            ProjectRow(project: project,
+                            ProjectRow(monitor: monitor,
+                                       project: project,
                                        isStale: stale.contains(project),
                                        isStopping: monitor.stopping.contains(project.root)) {
                                 Task { await monitor.stop([project]) }
@@ -43,11 +44,11 @@ struct DevServersView: View {
     }
 
     private func summary(stale: [DevServerProject]) -> some View {
-        let servers = monitor.projects.reduce(0) { $0 + $1.servers.count }
+        let servers = monitor.projects.reduce(0) { $0 + $1.instances.count }
         let footprint = monitor.projects.reduce(0) { $0 + $1.footprint }
         return HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text("\(servers) processes in \(monitor.projects.count) projects")
+                Text("\(servers) server\(servers == 1 ? "" : "s") in \(monitor.projects.count) project\(monitor.projects.count == 1 ? "" : "s")")
                     .font(.subheadline.weight(.semibold))
                 Text("\(Format.memory(footprint)) · stale after \(monitor.staleAfterHours)h")
                     .font(.caption).foregroundStyle(.secondary)
@@ -81,57 +82,118 @@ struct DevServersView: View {
 }
 
 private struct ProjectRow: View {
+    let monitor: SystemMonitor
     let project: DevServerProject
     let isStale: Bool
     let isStopping: Bool
     let onStop: () -> Void
 
     var body: some View {
-        HStack(alignment: .center, spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 4) {
-                    if project.isProtected {
-                        Image(systemName: "lock.fill").font(.caption).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center, spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 4) {
+                        if project.isProtected {
+                            Image(systemName: "lock.fill").font(.caption).foregroundStyle(.secondary)
+                        }
+                        Text(project.displayName())
+                            .font(.callout.weight(.medium))
+                            .lineLimit(1).truncationMode(.middle)
                     }
-                    Text(project.displayName())
-                        .font(.callout.weight(.medium))
-                        .lineLimit(1).truncationMode(.middle)
-                }
-                .help(project.root)
-
-                Text(serverSummary)
-                    .font(.caption).foregroundStyle(.secondary)
-                    .lineLimit(1).truncationMode(.tail)
-
-                HStack(spacing: 6) {
-                    if let start = project.newestStart {
-                        Text(Format.age(since: start))
-                            .foregroundStyle(isStale ? .orange : .secondary)
+                    .help(project.root)
+                    HStack(spacing: 6) {
+                        if let start = project.newestStart {
+                            Text(Format.age(since: start)).foregroundStyle(isStale ? .orange : .secondary)
+                        }
+                        Text(Format.memory(project.footprint)).foregroundStyle(.secondary)
                     }
-                    Text(Format.memory(project.footprint)).foregroundStyle(.secondary)
+                    .font(.caption.monospacedDigit())
                 }
-                .font(.caption.monospacedDigit())
+                Spacer()
+                if isStopping {
+                    ProgressView().controlSize(.small)
+                } else if !project.isProtected && project.instances.count > 1 {
+                    Button("Stop all", action: onStop)
+                }
             }
-            Spacer()
-            if isStopping {
-                ProgressView().controlSize(.small)
-            } else if !project.isProtected {
-                Button("Stop", action: onStop)
+
+            let duplicates = project.duplicateInstanceIDs
+            ForEach(project.instances) { instance in
+                InstanceRow(instance: instance,
+                            isDuplicate: duplicates.contains(instance.id),
+                            canStop: !project.isProtected || duplicates.contains(instance.id),
+                            isStopping: isStopping || monitor.stoppingInstances.contains(instance.id)) {
+                    Task { await monitor.stop(instance, in: project) }
+                }
             }
         }
         .padding(8)
         .background(.quaternary.opacity(isStale ? 0.6 : 0.3), in: RoundedRectangle(cornerRadius: 6))
     }
+}
 
-    /// "Django :18869 · Vite :19869 · esbuild", with repeats collapsed ("Celery ×5").
-    private var serverSummary: String {
-        var counts: [String: Int] = [:]
-        var order: [String] = []
-        for server in project.servers {
-            if counts[server.label] == nil { order.append(server.label) }
-            counts[server.label, default: 0] += 1
+/// One launch: "Vite :19005 · 2 processes · 24d · 18 MB  Duplicate  [Stop]".
+private struct InstanceRow: View {
+    let instance: DevServerInstance
+    let isDuplicate: Bool
+    let canStop: Bool
+    let isStopping: Bool
+    let onStop: () -> Void
+
+    @State private var confirm = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(instance.label).font(.caption.weight(.medium))
+            Text(details).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                .lineLimit(1).truncationMode(.tail)
+            if isDuplicate {
+                Tag(text: "Duplicate", color: .orange)
+                    .help("A newer \(instance.kind.rawValue) is running in this project too.")
+            }
+            if instance.isDetached {
+                Tag(text: "Detached", color: .secondary)
+                    .help("The terminal or tool that started it has exited, so nothing will stop it for you.")
+            }
+            Spacer(minLength: 4)
+            if isStopping {
+                ProgressView().controlSize(.mini)
+            } else if canStop {
+                Button(confirm ? "Stop?" : "Stop") {
+                    if confirm { confirm = false; onStop() } else { confirm = true }
+                }
+                .controlSize(.small)
+                .tint(confirm ? .red : nil)
+                .help("Stops " + processList)
+            }
         }
-        return order.map { counts[$0]! > 1 ? "\($0) ×\(counts[$0]!)" : $0 }.joined(separator: " · ")
+        .padding(.leading, 18)
+        .help(processList)
+    }
+
+    private var details: String {
+        var parts = ["\(instance.processCount) process\(instance.processCount == 1 ? "" : "es")"]
+        if let start = instance.startTime { parts.append("started \(Format.age(since: start)) ago") }
+        parts.append(Format.memory(instance.footprint))
+        return parts.joined(separator: " · ")
+    }
+
+    private var processList: String {
+        (instance.launchers + instance.servers.map(\.process))
+            .map { "\($0.name) (\($0.pid))" }.joined(separator: ", ")
+    }
+}
+
+private struct Tag: View {
+    let text: String
+    let color: Color
+
+    var body: some View {
+        Text(text)
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(color)
+            .padding(.horizontal, 5).padding(.vertical, 1)
+            .background(color.opacity(0.15), in: Capsule())
     }
 }
 

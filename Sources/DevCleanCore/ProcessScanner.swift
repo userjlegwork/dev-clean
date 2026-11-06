@@ -8,16 +8,19 @@ public struct ProcessSample: Sendable, Identifiable, Equatable {
     /// `ri_phys_footprint`: the "Memory" column in Activity Monitor, including compressed and swapped pages.
     public var footprint: UInt64
     public var startTime: Date?
+    /// 1 (launchd) once the process that started it has exited.
+    public var parentPID: Int32?
 
     public var id: Int32 { pid }
     public var appName: String { ProcessScanner.appName(forExecutablePath: executablePath, fallback: name) }
 
-    public init(pid: Int32, name: String, executablePath: String?, footprint: UInt64, startTime: Date?) {
+    public init(pid: Int32, name: String, executablePath: String?, footprint: UInt64, startTime: Date?, parentPID: Int32? = nil) {
         self.pid = pid
         self.name = name
         self.executablePath = executablePath
         self.footprint = footprint
         self.startTime = startTime
+        self.parentPID = parentPID
     }
 }
 
@@ -41,7 +44,9 @@ public enum ProcessScanner {
         guard pid > 0, let footprint = footprint(pid: pid) else { return nil }
         let path = executablePath(pid: pid)
         let name = path.map { ($0 as NSString).lastPathComponent } ?? shortName(pid: pid) ?? "pid \(pid)"
-        return ProcessSample(pid: pid, name: name, executablePath: path, footprint: footprint, startTime: startTime(pid: pid))
+        let info = bsdInfo(pid: pid)
+        return ProcessSample(pid: pid, name: name, executablePath: path, footprint: footprint,
+                             startTime: info.map(startTime(of:)) ?? startTime(pid: pid), parentPID: info.map { Int32($0.pbi_ppid) })
     }
 
     /// Groups helpers under their outermost app bundle, largest first.

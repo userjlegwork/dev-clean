@@ -15,6 +15,8 @@ final class SystemMonitor {
 
     /// Project roots currently being stopped.
     private(set) var stopping: Set<String> = []
+    /// Single instances currently being stopped.
+    private(set) var stoppingInstances: Set<Int32> = []
     private(set) var lastStopSummary: String?
 
     var protectedPaths: [String] {
@@ -91,9 +93,22 @@ final class SystemMonitor {
         stopping.formUnion(roots)
         defer { stopping.subtract(roots) }
 
-        let report = await ProcessStopper.stop(targets.flatMap { $0.servers.map(\.stopTarget) })
+        let report = await ProcessStopper.stop(targets.flatMap(\.stopTargets))
         let names = targets.count == 1 ? targets[0].displayName() : "\(targets.count) projects"
         lastStopSummary = "\(names): \(report.summary)"
+        await refresh()
+    }
+
+    /// Stops one launch (with its launchers and children). In a protected project only older duplicates
+    /// can be stopped, so the newest server of each kind there keeps running.
+    func stop(_ instance: DevServerInstance, in project: DevServerProject) async {
+        guard !stoppingInstances.contains(instance.id),
+              !project.isProtected || project.duplicateInstanceIDs.contains(instance.id) else { return }
+        stoppingInstances.insert(instance.id)
+        defer { stoppingInstances.remove(instance.id) }
+
+        let report = await ProcessStopper.stop(instance.stopTargets)
+        lastStopSummary = "\(instance.label) in \(project.displayName()): \(report.summary)"
         await refresh()
     }
 

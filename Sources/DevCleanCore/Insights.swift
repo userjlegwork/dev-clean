@@ -31,7 +31,7 @@ public enum Insights {
         var insights: [Insight] = []
 
         if !staleProjects.isEmpty {
-            let servers = staleProjects.reduce(0) { $0 + $1.servers.count }
+            let servers = staleProjects.reduce(0) { $0 + $1.instances.count }
             let footprint = staleProjects.reduce(0) { $0 + $1.footprint }
             insights.append(Insight(
                 id: "stale-servers", severity: .info,
