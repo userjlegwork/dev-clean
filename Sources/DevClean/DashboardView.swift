@@ -42,6 +42,9 @@ struct DashboardView: View {
         }
         .padding(14)
         .frame(width: 380)
+        // SwiftUI grows the menu-bar popover when content gets taller but never shrinks it, so a
+        // shorter tab sat in empty space. Measure the content and fit the window to it.
+        .background(GeometryReader { proxy in WindowHeightFitter(height: proxy.size.height) })
     }
 
     @ViewBuilder
@@ -239,6 +242,26 @@ private extension MemoryPressure {
         case .normal: .ok
         case .warning: .warning
         case .critical: .critical
+        }
+    }
+}
+
+/// Sets its window's content height to `height`, keeping the top edge where it is (the popover hangs
+/// from the menu bar; the standalone window keeps its title bar in place).
+private struct WindowHeightFitter: NSViewRepresentable {
+    let height: CGFloat
+
+    func makeNSView(context: Context) -> NSView { NSView() }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        let height = height
+        // After this layout pass: resizing the window during it would re-enter SwiftUI's layout.
+        DispatchQueue.main.async {
+            guard height > 1, let window = view.window,
+                  let content = window.contentView, abs(content.frame.height - height) > 1 else { return }
+            var frame = window.frameRect(forContentRect: NSRect(origin: .zero, size: NSSize(width: content.frame.width, height: height)))
+            frame.origin = NSPoint(x: window.frame.minX, y: window.frame.maxY - frame.height)
+            window.setFrame(frame, display: true)
         }
     }
 }
