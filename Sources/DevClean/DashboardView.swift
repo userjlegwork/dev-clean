@@ -30,30 +30,18 @@ struct DashboardView: View {
                 Label(error, systemImage: "xmark.octagon").foregroundStyle(.red).font(.callout)
             }
 
-            // The popover grows with its content; past the screen's height macOS cuts off the bottom
-            // (and the footer with it). Scroll the tab instead once it no longer fits.
-            FittingScrollView(maxHeight: maxContentHeight) {
-                VStack(alignment: .leading, spacing: 14) {
-                    switch tab {
-                    case .overview: overview
-                    case .devServers: DevServersView(monitor: monitor)
-                    case .storage: StorageView(monitor: monitor, storage: storage)
-                    case .settings: SettingsView(monitor: monitor, storage: storage, automation: automation)
-                    }
-                }
+            switch tab {
+            case .overview: overview
+            case .devServers: DevServersView(monitor: monitor)
+            case .storage: StorageView(monitor: monitor, storage: storage)
+            case .settings: SettingsView(monitor: monitor, storage: storage, automation: automation)
             }
 
             Divider()
-            footer.fixedSize(horizontal: false, vertical: true)
+            footer
         }
         .padding(14)
         .frame(width: 380)
-    }
-
-    /// Screen height minus the menu bar, the header, tab picker and footer, and some margin.
-    private var maxContentHeight: CGFloat {
-        let screen = NSScreen.main?.visibleFrame.height ?? 800
-        return max(screen - 190, 300)
     }
 
     @ViewBuilder
@@ -158,8 +146,11 @@ struct DashboardView: View {
                 }
             }
 
+            // Wrapping text must ask for its full height, or the popover is sized a line short and the
+            // footer ends up against the bottom edge.
             Text("Your processes only. System daemons and WindowServer need admin rights to read.")
                 .font(.caption2).foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -194,6 +185,7 @@ private struct MetricGauge: View {
             ProgressView(value: min(max(fraction, 0), 1))
                 .tint(severity == .ok ? .accentColor : severity.color)
             Text(detail).font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
@@ -209,6 +201,7 @@ private struct InsightRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(insight.title).font(.callout.weight(.medium))
                 Text(insight.detail).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -248,35 +241,4 @@ private extension MemoryPressure {
         case .critical: .critical
         }
     }
-}
-
-/// Shows `content` at its natural height, scrolling only when that's more than `maxHeight`.
-private struct FittingScrollView<Content: View>: View {
-    let maxHeight: CGFloat
-    @ViewBuilder let content: Content
-
-    @State private var contentHeight: CGFloat = 0
-
-    var body: some View {
-        ScrollView(.vertical) {
-            content
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(GeometryReader { proxy in
-                    Color.clear.preference(key: ContentHeightKey.self, value: proxy.size.height)
-                })
-        }
-        .scrollIndicators(contentHeight > maxHeight ? .automatic : .never)
-        .scrollDisabled(contentHeight <= maxHeight)
-        // Ideal height is the content's (capped), but it may shrink: when content grows while the window
-        // stays the same size (a new insight appears), this scrolls instead of squeezing the footer.
-        .frame(minHeight: min(contentHeight, 120), idealHeight: min(max(contentHeight, 1), maxHeight),
-               maxHeight: min(max(contentHeight, 1), maxHeight))
-        .layoutPriority(-1)
-        .onPreferenceChange(ContentHeightKey.self) { contentHeight = $0 }
-    }
-}
-
-private struct ContentHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
