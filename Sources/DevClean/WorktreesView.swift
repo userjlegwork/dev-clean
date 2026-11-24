@@ -43,7 +43,7 @@ struct WorktreesView: View {
             if let summary = model.summary {
                 Text(summary).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            Text("Remove: clean, pushed, idle worktrees only (node_modules and .env go too). Force remove: to the Trash, unpushed detached commits kept on a devclean-backup branch.")
+            Text("Remove: clean, pushed, idle worktrees only (node_modules and .env go too). Leftover: a Codex folder git no longer lists, deleted once untouched for a day. Force remove: to the Trash, unpushed detached commits kept on a devclean-backup branch.")
                 .font(.caption2).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
 
             actions
@@ -58,7 +58,8 @@ struct WorktreesView: View {
     private var header: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text("\(model.rows.count) worktrees · \(model.removableCount) removable")
+                Text("\(model.rows.count) worktrees · \(model.removableCount) removable"
+                     + (model.orphanCount > 0 ? " · \(model.orphanCount) leftover" : ""))
                     .font(.subheadline.weight(.semibold))
                 Text(model.isScanning ? "Checking… sizes take a minute" :
                         model.lastScan.map { "Checked \(Format.age(since: $0)) ago" } ?? "Not checked yet")
@@ -217,6 +218,10 @@ private struct WorktreeRowView: View {
 
     private var detail: String {
         if row.worktree.isPrunable { return "Folder already gone · removes git's leftover record" }
+        if row.worktree.isOrphan {
+            let activity = row.status?.lastActivity.map { "changed \(Format.age(since: $0)) ago" }
+            return ["Leftover: git no longer lists it", activity].compactMap { $0 }.joined(separator: " · ")
+        }
         let branch = row.worktree.branch ?? "detached at \(row.worktree.head?.prefix(7) ?? "?")"
         let activity = row.status?.lastActivity.map { "last used \(Format.age(since: $0)) ago" }
         return [branch, activity].compactMap { $0 }.joined(separator: " · ")

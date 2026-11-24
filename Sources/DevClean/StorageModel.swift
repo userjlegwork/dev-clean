@@ -22,6 +22,7 @@ final class StorageModel {
     /// The Storage tab's other sections.
     let worktrees = WorktreeModel()
     let largeFiles = LargeFilesModel()
+    let diskUsage = DiskUsageModel()
 
     var isRunning: Bool { runningTarget != nil }
     var selectedEstimate: UInt64 { selected.reduce(0) { $0 + (sizes[$1] ?? 0) } }

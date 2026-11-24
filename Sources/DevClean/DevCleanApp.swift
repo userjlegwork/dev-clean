@@ -29,7 +29,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         // Info.plist sets LSUIElement for the bundled app; this covers `swift run` too.
         NSApp.setActivationPolicy(.accessory)
         if Bundle.main.bundleIdentifier != nil { UNUserNotificationCenter.current().delegate = self }
-        monitor.onRefresh = { [unowned self] in automation.check(monitor: monitor, storage: storage) }
+        monitor.onRefresh = { [unowned self] in
+            automation.check(monitor: monitor, storage: storage)
+            storage.diskUsage.check(diskFree: monitor.system?.disk.free)
+        }
+        storage.diskUsage.onScan = { [unowned self] growth in monitor.growth = growth }
         // Opened by hand (Finder, Spotlight, `open`): show a window too, since the menu-bar
         // icon is easy to miss or can be hidden behind the notch. Stay quiet as a login item.
         if !launchedAsLoginItem() { showWindow() }

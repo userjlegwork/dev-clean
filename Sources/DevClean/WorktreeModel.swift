@@ -38,6 +38,7 @@ final class WorktreeModel {
 
     var isRemoving: Bool { removing != nil }
     var removableCount: Int { rows.filter(\.isRemovable).count }
+    var orphanCount: Int { rows.filter(\.worktree.isOrphan).count }
     var selectedSize: UInt64 { rows.filter { selected.contains($0.id) }.reduce(0) { $0 + ($1.size ?? 0) } }
 
     init() {
@@ -56,6 +57,8 @@ final class WorktreeModel {
         for repository in Worktrees.repositories(extra: extra) {
             worktrees += await Worktrees.list(repository: repository)
         }
+        // Codex folders git has forgotten. Found after listing so registered worktrees are never included.
+        worktrees += Worktrees.orphans(registered: Set(worktrees.map(\.path)))
         rows = worktrees.map { WorktreeRow(worktree: $0, blockers: []) }
 
         await forEach(worktrees, width: 6) { worktree in
@@ -98,7 +101,9 @@ final class WorktreeModel {
             let freed = max(Int64(diskFree() ?? 0) - Int64(before ?? 0), 0)
             if let error { errors[row.id] = error } else { removed += 1 }
 
-            let action = row.worktree.isPrunable ? "git worktree prune" : "git worktree remove \(row.worktree.path)"
+            let action = row.worktree.isPrunable ? "git worktree prune"
+                : row.worktree.isOrphan ? "Delete leftover folder \(row.worktree.path)"
+                : "git worktree remove \(row.worktree.path)"
             log.append(.init(date: Date(), target: "Worktree \(row.worktree.displayName())", action: action,
                              estimatedBytes: row.size ?? 0,
                              result: CleanupResult(targetID: "worktree", succeeded: error == nil, message: error ?? "Done",

@@ -45,6 +45,22 @@ needs the bundled app.
   anything changed since the check. Worktrees whose files iCloud has offloaded
   are left alone: `git status` would download every file. Last activity comes
   from the reflog entries, not file dates (`git gc` rewrites those).
+  Folders under `~/.codex/worktrees` that no repository lists any more
+  ("leftover") show up too. Git can't check them, so one is deleted only if
+  nothing runs inside, no file near the top changed in the last day, and any
+  full clone in it has no uncommitted or unpushed work; only direct, real
+  (non-symlink) children of `~/.codex/worktrees` are ever deleted.
+- Disk usage (`DiskUsage`, `UsageHistory`, `Growth`): sizes every folder in
+  home, `~/Library` split by app (Application Support and Caches one level
+  deeper), `/Applications` and Homebrew, and labels each (rebuilds itself,
+  your files, managed by an app). Other apps' sandboxes (`~/Library/Containers`,
+  so Docker's disk), cloud mounts and photo libraries aren't opened, since macOS
+  would ask for permission; they show as "Everything else". Runs in the
+  background shortly after launch, every 6 hours and when free space drops by
+  3 GB; snapshots are kept for 14 days in
+  `~/Library/Application Support/DevClean/usage-history.json`. A folder that
+  grew 3 GB or more since a scan 15 minutes to 24 hours earlier becomes a
+  warning (and a notification).
 - Large files (`LargeFileFinder`): Spotlight for home plus a walk of
   dot-folders (which Spotlight skips), ignoring phone/iCloud mounts. Files go
   to the Trash; anything under `~/Library` or open in a process (`lsof`) can
@@ -63,6 +79,7 @@ Read-only checks against this machine (they stop and delete nothing):
 DEVCLEAN_LIVE=1 swift test --filter LiveDevServerScan
 DEVCLEAN_LIVE=1 swift test --filter LiveCleanupPreview
 DEVCLEAN_LIVE=1 swift test --filter LiveWorktreePreview
+DEVCLEAN_LIVE=1 swift test --filter LiveDiskUsage
 ```
 
 ## Releasing

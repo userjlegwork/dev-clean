@@ -55,6 +55,9 @@ struct DashboardView: View {
                             switch insight.id {
                             case "stale-servers": tab = .devServers
                             case "disk": tab = .storage
+                            case "growth":
+                                UserDefaults.standard.set("disk", forKey: "storageSection")
+                                tab = .storage
                             default: break
                             }
                         }

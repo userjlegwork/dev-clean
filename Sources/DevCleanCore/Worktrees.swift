@@ -11,6 +11,11 @@ public struct Worktree: Sendable, Identifiable, Equatable {
     public var isLocked: Bool
     /// Folder is gone; only git's bookkeeping is left.
     public var isPrunable: Bool
+    /// A Codex folder (~/.codex/worktrees/<id>) that no repository lists as a worktree any more:
+    /// git forgot it but the files stayed. `path` is the <id> folder itself.
+    public var isOrphan = false
+    /// For an orphan, the names of what's inside the <id> folder.
+    public var contents: [String] = []
 
     public var id: String { path }
 
@@ -21,6 +26,9 @@ public struct Worktree: Sendable, Identifiable, Equatable {
         if path.hasPrefix(codex) {
             let parts = path.dropFirst(codex.count).split(separator: "/")
             if parts.count == 2 { return "\(parts[0]) · \(parts[1])" }
+            if parts.count == 1, isOrphan {
+                return contents.isEmpty ? "\(parts[0]) · empty" : "\(parts[0]) · \(contents.joined(separator: ", "))"
+            }
         }
         return (path as NSString).abbreviatingWithTildeInPath
     }
@@ -47,9 +55,13 @@ public struct WorktreeStatus: Sendable, Equatable {
     }
 
     /// Reasons not to remove. Empty means `git worktree remove` (without --force) can go ahead.
-    public func blockers(for worktree: Worktree, protectedPaths: [String] = []) -> [String] {
+    public func blockers(for worktree: Worktree, protectedPaths: [String] = [], now: Date = Date()) -> [String] {
         var reasons: [String] = []
         if let error { reasons.append(error) }
+        // An orphan's changes can't be checked with git, so recent files mean someone may still be at work.
+        if worktree.isOrphan, let lastActivity, now.timeIntervalSince(lastActivity) < Worktrees.orphanGracePeriod {
+            reasons.append("Changed in the last day")
+        }
         if worktree.isLocked { reasons.append("Locked") }
         if DevServerRules(protectedPaths: protectedPaths).isProtected([worktree.path]) { reasons.append("In a protected folder") }
         if changedFiles > 0 { reasons.append("\(changedFiles) uncommitted change\(changedFiles == 1 ? "" : "s")") }
@@ -96,6 +108,105 @@ public enum Worktrees {
         return String(line[line.index(line.startIndex, offsetBy: "gitdir: ".count)..<range.lowerBound])
     }
 
+    // MARK: - Orphans
+
+    /// Orphans whose files changed more recently than this are left alone.
+    public static let orphanGracePeriod: TimeInterval = 24 * 3_600
+
+    /// Folders under ~/.codex/worktrees that aren't a worktree any repository lists (`registered`).
+    /// A checkout whose `.git` file still points at an existing worktree record counts as registered
+    /// even if listing failed, so a broken repository never turns its worktrees into orphans.
+    public static func orphans(home: String = NSHomeDirectory(), registered: Set<String>) -> [Worktree] {
+        let codex = home + "/.codex/worktrees"
+        let fm = FileManager.default
+        let registered = Set(registered.map(DevServerRules.normalize))
+        var orphans: [Worktree] = []
+        for id in ((try? fm.contentsOfDirectory(atPath: codex)) ?? []).sorted() where !id.hasPrefix(".") {
+            let folder = "\(codex)/\(id)"
+            guard isRealDirectory(folder) else { continue }
+            let names = ((try? fm.contentsOfDirectory(atPath: folder)) ?? []).filter { !$0.hasPrefix(".") }.sorted()
+            let linked = names.contains { name in
+                let path = "\(folder)/\(name)"
+                if registered.contains(DevServerRules.normalize(path)) { return true }
+                guard let contents = try? String(contentsOfFile: path + "/.git", encoding: .utf8),
+                      let line = contents.split(whereSeparator: \.isNewline).first, line.hasPrefix("gitdir: ") else { return false }
+                return fm.fileExists(atPath: String(line.dropFirst("gitdir: ".count)))
+            }
+            guard !linked else { continue }
+            orphans.append(Worktree(path: folder, repository: "", isLocked: false, isPrunable: false,
+                                    isOrphan: true, contents: names))
+        }
+        return orphans
+    }
+
+    /// Git can't say what changed in an orphan, so its status is the newest file date near the top,
+    /// processes inside, and, for any full clone in it (a `.git` folder), uncommitted and unpushed work.
+    static func orphanStatus(_ orphan: Worktree, processes: [RunningProcess]) async -> WorktreeStatus {
+        let activity = newestModification(orphan.path, depth: 3)
+        let inside = processesInside(orphan.path, processes)
+        var status = WorktreeStatus(lastActivity: activity, processes: inside)
+        let fm = FileManager.default
+        for name in orphan.contents {
+            let path = "\(orphan.path)/\(name)"
+            if hasOfflineFiles(path) {
+                status.error = "Files are offloaded to iCloud, so changes can't be checked"
+                return status
+            }
+            var isDirectory: ObjCBool = false
+            guard fm.fileExists(atPath: path + "/.git", isDirectory: &isDirectory), isDirectory.boolValue else { continue }
+            let changes = await CommandRunner.run(git, ["-C", path, "status", "--porcelain"], timeout: .seconds(30))
+            let unpushed = await CommandRunner.run(git, ["-C", path, "rev-list", "--count", "--branches", "--not", "--remotes"],
+                                                   timeout: .seconds(30))
+            guard changes.status == 0, unpushed.status == 0,
+                  let count = Int(unpushed.output.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+                status.error = "Couldn't check the git clone in \(name)"
+                return status
+            }
+            status.changedFiles += changes.output.split(whereSeparator: \.isNewline).count
+            status.unpushedCommits += count
+        }
+        return status
+    }
+
+    /// Newest modification date of `path` and what's under it, `depth` levels down. Skips node_modules
+    /// and .git, whose dates change on installs and fetches rather than on someone's work.
+    static func newestModification(_ path: String, depth: Int) -> Date? {
+        let fm = FileManager.default
+        var newest = (try? fm.attributesOfItem(atPath: path))?[.modificationDate] as? Date
+        guard depth > 0, isRealDirectory(path) else { return newest }
+        for name in (try? fm.contentsOfDirectory(atPath: path)) ?? [] where name != "node_modules" && name != ".git" {
+            if let date = newestModification("\(path)/\(name)", depth: depth - 1), date > (newest ?? .distantPast) {
+                newest = date
+            }
+        }
+        return newest
+    }
+
+    /// A directory, not a symlink to one.
+    static func isRealDirectory(_ path: String) -> Bool {
+        var info = stat()
+        return lstat(path, &info) == 0 && (info.st_mode & S_IFMT) == S_IFDIR
+    }
+
+    /// Deletes an orphan outright after re-checking it. Only direct children of ~/.codex/worktrees,
+    /// never symlinks: git has nothing left to refuse with, so these checks are the only guard.
+    static func deleteOrphan(_ orphan: Worktree, protectedPaths: [String], home: String = NSHomeDirectory()) async -> String? {
+        let parent = DevServerRules.normalize(home + "/.codex/worktrees")
+        let path = DevServerRules.normalize(orphan.path)
+        guard (path as NSString).deletingLastPathComponent == parent, isRealDirectory(path) else {
+            return "Not a folder directly inside ~/.codex/worktrees"
+        }
+        let status = await orphanStatus(orphan, processes: RunningProcess.current())
+        let blockers = status.blockers(for: orphan, protectedPaths: protectedPaths)
+        guard blockers.isEmpty else { return blockers.joined(separator: "; ") }
+        do {
+            try FileManager.default.removeItem(atPath: path)
+            return nil
+        } catch {
+            return "Couldn't delete it: \(error.localizedDescription)"
+        }
+    }
+
     // MARK: - Listing
 
     public static func list(repository: String) async -> [Worktree] {
@@ -132,6 +243,7 @@ public enum Worktrees {
 
     /// Reads everything `blockers` needs. `processes` maps a running process label to its cwd and executable.
     public static func status(_ worktree: Worktree, processes: [RunningProcess]) async -> WorktreeStatus {
+        if worktree.isOrphan { return await orphanStatus(worktree, processes: processes) }
         guard !worktree.isPrunable else { return WorktreeStatus() }
         let activity = lastActivity(worktree.path)
 
@@ -200,6 +312,7 @@ public enum Worktrees {
     /// if anything changed since the check. Ignored files (node_modules, .env) go with it.
     public static func remove(_ worktree: Worktree, protectedPaths: [String]) async -> String? {
         if worktree.isPrunable { return await prune(repository: worktree.repository) }
+        if worktree.isOrphan { return await deleteOrphan(worktree, protectedPaths: protectedPaths) }
         let status = await status(worktree, processes: RunningProcess.current())
         let blockers = status.blockers(for: worktree, protectedPaths: protectedPaths)
         guard blockers.isEmpty else { return blockers.joined(separator: "; ") }
@@ -267,7 +380,7 @@ public enum Worktrees {
                 throw .failed("Couldn't move it to the Trash: \(error.localizedDescription)")
             }
         }
-        if let error = await prune(repository: worktree.repository) { throw .failed(error) }
+        if !worktree.isOrphan, let error = await prune(repository: worktree.repository) { throw .failed(error) }
         return result
     }
 

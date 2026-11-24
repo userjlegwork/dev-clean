@@ -11,6 +11,10 @@ final class SystemMonitor {
     private(set) var apps: [AppGroup] = []
     private(set) var projects: [DevServerProject] = []
     private(set) var insights: [Insight] = []
+    /// Folders that grew fast, from the latest disk-usage scan.
+    var growth: [FolderGrowth] = [] {
+        didSet { if let system { insights = Insights.evaluate(system: system, processes: processes, staleProjects: staleProjects, growth: growth) } }
+    }
     private(set) var lastError: String?
 
     /// Project roots currently being stopped.
@@ -72,7 +76,7 @@ final class SystemMonitor {
         switch snapshot {
         case .success(let system):
             self.system = system
-            insights = Insights.evaluate(system: system, processes: samples, staleProjects: staleProjects)
+            insights = Insights.evaluate(system: system, processes: samples, staleProjects: staleProjects, growth: growth)
             lastError = nil
             onRefresh?()
         case .failure(let error):

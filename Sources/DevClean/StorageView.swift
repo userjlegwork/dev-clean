@@ -6,13 +6,14 @@ struct StorageView: View {
     let monitor: SystemMonitor
     let storage: StorageModel
 
-    private enum Section: String { case caches, worktrees, largeFiles }
+    private enum Section: String { case disk, caches, worktrees, largeFiles }
 
     @AppStorage("storageSection") private var section = Section.caches
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Picker("", selection: $section) {
+                Text("Disk").tag(Section.disk)
                 Text("Caches").tag(Section.caches)
                 Text("Worktrees").tag(Section.worktrees)
                 Text("Large files").tag(Section.largeFiles)
@@ -22,6 +23,7 @@ struct StorageView: View {
             .controlSize(.small)
 
             switch section {
+            case .disk: DiskUsageView(monitor: monitor, model: storage.diskUsage)
             case .caches: CachesView(monitor: monitor, storage: storage)
             case .worktrees: WorktreesView(monitor: monitor, model: storage.worktrees)
             case .largeFiles: LargeFilesView(model: storage.largeFiles)
@@ -175,6 +177,117 @@ private struct TargetRow: View {
                         .foregroundStyle(result.succeeded ? .green : .orange)
                 }
             }
+        }
+        .padding(8)
+        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 6))
+    }
+}
+
+/// Where the disk went: the biggest folders, what each one is, and what grew since the last scans.
+private struct DiskUsageView: View {
+    let monitor: SystemMonitor
+    let model: DiskUsageModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            header
+
+            if !model.growth.isEmpty {
+                Label(model.growth.prefix(3).map {
+                    "\(DiskUsage.displayPath($0.path)) +\(Format.disk($0.bytes)) in \(Growth.duration($0.interval))"
+                }.joined(separator: " · "), systemImage: "arrow.up.right")
+                    .font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            ScrollView {
+                VStack(spacing: 6) {
+                    ForEach(model.rows()) { row in DiskUsageRowView(row: row) }
+                    if let unmeasured { unmeasuredRow(unmeasured) }
+                }
+            }
+            .frame(minHeight: 260, maxHeight: 340)
+
+            if let error = model.saveError {
+                Label(error, systemImage: "xmark.circle").font(.caption).foregroundStyle(.red)
+            }
+            Text(footnote)
+                .font(.caption2).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var header: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                if let disk = monitor.system?.disk {
+                    Text("\(Format.disk(disk.free)) free of \(Format.disk(disk.total))")
+                        .font(.subheadline.weight(.semibold))
+                }
+                Text(model.isScanning ? "Measuring… a full scan takes a few minutes"
+                     : model.latest.map { "Measured \(Format.age(since: $0.date)) ago" } ?? "Not measured yet")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if model.isScanning { ProgressView().controlSize(.small) }
+            Button("Rescan") { Task { await model.scan() } }
+                .disabled(model.isScanning)
+        }
+    }
+
+    /// Used space the scan doesn't reach: macOS, swap, other apps' sandboxes (Docker's disk), other users.
+    private var unmeasured: UInt64? {
+        guard let latest = model.latest, let disk = monitor.system?.disk else { return nil }
+        let used = disk.total > disk.free ? disk.total - disk.free : 0
+        return used > latest.measured ? used - latest.measured : nil
+    }
+
+    private func unmeasuredRow(_ bytes: UInt64) -> some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Everything else").font(.callout.weight(.medium))
+                Text("macOS, swap, other apps' sandboxes (Docker's disk, Mail…) and folders outside your home. Not opened, so macOS doesn't ask for permission.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            Text(Format.disk(bytes)).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+        }
+        .padding(8)
+        .background(.quaternary.opacity(0.15), in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    private var footnote: String {
+        var text = "Your home folder, ~/Library split by app, /Applications and Homebrew. Rescanned every 6 hours and when free space drops by 3 GB."
+        if let base = model.baselineDate { text += " Changes are since \(Format.age(since: base)) ago." }
+        return text
+    }
+}
+
+private struct DiskUsageRowView: View {
+    let row: DiskUsageRow
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack {
+                    Text(DiskUsage.displayPath(row.path)).font(.callout.weight(.medium))
+                        .lineLimit(1).truncationMode(.middle)
+                    Spacer()
+                    if let change = row.change, abs(change) >= 100_000_000 {
+                        Text((change > 0 ? "+" : "−") + Format.disk(UInt64(abs(change))))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(change >= Int64(Growth.minimum) ? .orange : .secondary)
+                    }
+                    Text(Format.disk(row.bytes)).font(.callout.monospacedDigit())
+                }
+                Text(([row.kind.label] + [row.hint].compactMap { $0 }).joined(separator: " · "))
+                    .font(.caption).foregroundStyle(row.kind == .rebuilds ? .green : .secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Button {
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: row.path)])
+            } label: { Image(systemName: "magnifyingglass") }
+                .buttonStyle(.borderless)
+                .help("Show in Finder")
         }
         .padding(8)
         .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 6))

@@ -27,8 +27,19 @@ public struct Thresholds: Sendable {
 public enum Insights {
     public static func evaluate(system: SystemSnapshot, processes: [ProcessSample],
                                 staleProjects: [DevServerProject] = [],
+                                growth: [FolderGrowth] = [],
                                 thresholds: Thresholds = Thresholds()) -> [Insight] {
         var insights: [Insight] = []
+
+        if let top = growth.first {
+            let others = growth.dropFirst().prefix(2)
+                .map { "\(DiskUsage.displayPath($0.path)) +\(Format.disk($0.bytes))" }
+            insights.append(Insight(
+                id: "growth", severity: .warning,
+                title: "\(DiskUsage.displayPath(top.path)) grew \(Format.disk(top.bytes)) in \(Growth.duration(top.interval))",
+                detail: (others.isEmpty ? "" : "Also \(others.joined(separator: ", ")). ")
+                    + "See Storage → Disk for what's using space."))
+        }
 
         if !staleProjects.isEmpty {
             let servers = staleProjects.reduce(0) { $0 + $1.instances.count }
@@ -36,7 +47,7 @@ public enum Insights {
             insights.append(Insight(
                 id: "stale-servers", severity: .info,
                 title: "\(servers) stale dev server\(servers == 1 ? "" : "s") in \(staleProjects.count) project\(staleProjects.count == 1 ? "" : "s")",
-                detail: "Using \(Format.memory(footprint)). Stop them from the Dev servers tab."))
+                detail: "Using \(Format.memory(footprint)). Stop them from the Servers tab."))
         }
 
         switch system.memory.pressure {

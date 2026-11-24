@@ -121,7 +121,7 @@ final class Automation {
 
     static func tab(for insightID: String) -> String {
         switch insightID {
-        case "disk": "storage"
+        case "disk", "growth": "storage"
         case "stale-servers": "devServers"
         default: "overview"
         }
