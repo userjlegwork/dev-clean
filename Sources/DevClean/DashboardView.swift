@@ -30,18 +30,30 @@ struct DashboardView: View {
                 Label(error, systemImage: "xmark.octagon").foregroundStyle(.red).font(.callout)
             }
 
-            switch tab {
-            case .overview: overview
-            case .devServers: DevServersView(monitor: monitor)
-            case .storage: StorageView(monitor: monitor, storage: storage)
-            case .settings: SettingsView(monitor: monitor, storage: storage, automation: automation)
+            // The popover grows with its content; past the screen's height macOS cuts off the bottom
+            // (and the footer with it). Scroll the tab instead once it no longer fits.
+            FittingScrollView(maxHeight: maxContentHeight) {
+                VStack(alignment: .leading, spacing: 14) {
+                    switch tab {
+                    case .overview: overview
+                    case .devServers: DevServersView(monitor: monitor)
+                    case .storage: StorageView(monitor: monitor, storage: storage)
+                    case .settings: SettingsView(monitor: monitor, storage: storage, automation: automation)
+                    }
+                }
             }
 
             Divider()
-            footer
+            footer.fixedSize(horizontal: false, vertical: true)
         }
         .padding(14)
         .frame(width: 380)
+    }
+
+    /// Screen height minus the menu bar, the header, tab picker and footer, and some margin.
+    private var maxContentHeight: CGFloat {
+        let screen = NSScreen.main?.visibleFrame.height ?? 800
+        return max(screen - 190, 300)
     }
 
     @ViewBuilder
@@ -236,4 +248,35 @@ private extension MemoryPressure {
         case .critical: .critical
         }
     }
+}
+
+/// Shows `content` at its natural height, scrolling only when that's more than `maxHeight`.
+private struct FittingScrollView<Content: View>: View {
+    let maxHeight: CGFloat
+    @ViewBuilder let content: Content
+
+    @State private var contentHeight: CGFloat = 0
+
+    var body: some View {
+        ScrollView(.vertical) {
+            content
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(GeometryReader { proxy in
+                    Color.clear.preference(key: ContentHeightKey.self, value: proxy.size.height)
+                })
+        }
+        .scrollIndicators(contentHeight > maxHeight ? .automatic : .never)
+        .scrollDisabled(contentHeight <= maxHeight)
+        // Ideal height is the content's (capped), but it may shrink: when content grows while the window
+        // stays the same size (a new insight appears), this scrolls instead of squeezing the footer.
+        .frame(minHeight: min(contentHeight, 120), idealHeight: min(max(contentHeight, 1), maxHeight),
+               maxHeight: min(max(contentHeight, 1), maxHeight))
+        .layoutPriority(-1)
+        .onPreferenceChange(ContentHeightKey.self) { contentHeight = $0 }
+    }
+}
+
+private struct ContentHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
